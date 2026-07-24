@@ -1,52 +1,90 @@
+"""
+RPKClust Candidate Generation Utilities (utils.py)
+Region-partitioned candidate extraction for FOR and NFOR message regions.
+"""
+
 import numpy as np
 
-def calculate_entropy(byte_array_list):
-    """Calculates Shannon entropy of a list of byte fragments."""
-    values = [bytes(b) for b in byte_array_list]
-    _, counts = np.unique(values, return_counts=True)
-    probabilities = counts / len(values)
-    return -np.sum(probabilities * np.log2(probabilities + 1e-9))
 
-def extract_for_candidate(messages, offset, length=1):
-    """Extracts a Fixed-Offset Region (FOR) candidate from all messages."""
-    return [m[offset:offset+length] if len(m) >= offset+length else None for m in messages]
-
-def extract_nfor_candidate(messages, tlv_tag, t_len=1, l_len=1):
-    """Extracts a Non-Fixed-Offset Region (NFOR) candidate using TLV parsing."""
-    extracted = []
-    for m in messages:
-        found = False
-        i = 0
-        while i < len(m) - (t_len + l_len):
-            # Parse Tag
-            tag = int.from_bytes(m[i:i+t_len], byteorder='big')
-            if tag == tlv_tag:
-                # Parse Length
-                length = int.from_bytes(m[i+t_len:i+t_len+l_len], byteorder='big')
-                val_start = i + t_len + l_len
-                val_end = val_start + length
-                if val_end <= len(m):
-                    extracted.append(m[val_start:val_end])
-                    found = True
-                    break
-            i += 1
-        if not found:
-            extracted.append(None)
-    return extracted
-
-def compute_empirical_bit_prob(values, msb):
+def extract_for_candidates(X, boundary_B, widths=(1, 2, 4)):
     """
-    Computes Q(k): the empirical probability that bit k is 1.
-    k=0 is the LSB, k=msb is the MSB.
+    Algorithm 2: Fixed-Offset Region (FOR) Candidate Generation.
+    Extracts fixed byte slice candidates for offsets < boundary_B.
     """
-    valid_vals = [int.from_bytes(v, 'big') for v in values if v is not None]
-    if not valid_vals:
-        return np.zeros(msb + 1)
-        
-    q_k = np.zeros(msb + 1)
-    for k in range(msb + 1):
-        # Count how many values have the k-th bit set to 1
-        bit_mask = 1 << k
-        count_ones = sum(1 for v in valid_vals if (v & bit_mask))
-        q_k[k] = count_ones / len(valid_vals)
-    return q_k
+    candidates = []
+    if not X or boundary_B <= 0:
+        return candidates
+
+    min_len = min(len(msg) for msg in X)
+    max_offset = min(boundary_B, min_len)
+
+    for offset in range(max_offset):
+        for width in widths:
+            if offset + width <= max_offset:
+                vals = [msg[offset:offset + width] for msg in X]
+                candidates.append({
+                    'type': 'FOR',
+                    'tag': f"FOR_Offset_{offset}_W{width}",
+                    'offset': offset,
+                    'width': width,
+                    'values': vals
+                })
+
+    return candidates
+
+
+def extract_nfor_tlv_candidates(X, boundary_B, t_len=1, l_len=1):
+    """
+    Algorithm 3: Non-Fixed-Offset Region (NFOR) TLV Candidate Generation.
+    Generic, protocol-independent TLV sequence parser starting at boundary_B.
+    """
+    msg_options = []
+    all_tags = set()
+
+    for msg in X:
+        opts = {}
+        offset = boundary_B
+
+        while offset + t_len + l_len <= len(msg):
+            tag_bytes = msg[offset: offset + t_len]
+            tag_val = int.from_bytes(tag_bytes, 'big')
+
+            length = int.from_bytes(msg[offset + t_len: offset + t_len + l_len], 'big')
+            val_start = offset + t_len + l_len
+            val_end = val_start + length
+
+            # Structural TLV verification: verify length payload fits in message
+            if 0 < length <= (len(msg) - val_start):
+                val_bytes = msg[val_start:val_end]
+
+                if tag_val not in opts:
+                    opts[tag_val] = {
+                        'value': val_bytes,
+                        'offset': offset
+                    }
+                    all_tags.add(tag_val)
+
+                offset = val_end
+            else:
+                # Advance 1 byte if alignment breaks
+                offset += 1
+
+        msg_options.append(opts)
+
+    nfor_candidates = []
+    for tag_val in sorted(all_tags):
+        vals = [opts[tag_val]['value'] if tag_val in opts else None for opts in msg_options]
+        offsets = [opts[tag_val]['offset'] for opts in msg_options if tag_val in opts]
+
+        valid_cnt = sum(1 for v in vals if v is not None)
+        if valid_cnt > 0:
+            avg_offset = float(np.mean(offsets)) if offsets else boundary_B
+            nfor_candidates.append({
+                'type': 'NFOR',
+                'tag': f"Option_{tag_val}",
+                'tag_val': tag_val,
+                'values': vals,
+                'offset': avg_offset
+            })
+
+    return nfor_candidates

@@ -1,76 +1,115 @@
+"""
+RPKClust Boundary Identification & Semantic Rules (semantic_rules.py)
+Generic evaluation of structural semantics across packet byte traces.
+"""
+
 import numpy as np
-import time
+
 
 class SemanticRules:
     """
-    Implements the 6 semantic detection rules for identifying the FOR/NFOR boundary.
+    Evaluates semantic rules for boundary detection and field profiling.
     """
-    def __init__(self, t_cap=None):
-        # Default T_cap to current time if not provided
-        self.t_cap = t_cap if t_cap else int(time.time())
-        
-        self.rules = [
-            (1, self.check_constant),
-            (1, self.check_sequence),
-            (4, self.check_timestamp),
-            (1, self.check_sparse),
-            (2, self.check_address),
-            (1, self.check_checksum)
-        ]
 
-    def check_constant(self, fragments, **kwargs):
-        """Rule 1: Constant Field (Entropy H(s) == 0)"""
-        return len(set(fragments)) == 1
+    @staticmethod
+    def is_constant(fragments):
+        """Rule 1: Constant Field (Zero Variance across non-None values)."""
+        valid = [f for f in fragments if f is not None]
+        if not valid:
+            return False
+        return len(set(valid)) == 1
 
-    def check_sequence(self, fragments, **kwargs):
-        """Rule 2: Sequence ID (Incrementing counters)"""
-        vals = [int.from_bytes(f, 'big') for f in fragments]
-        if len(vals) < 2: return False
-        
-        deltas = np.diff(vals)
-        # Check if all differences are exactly the same (delta v is constant)
-        return len(set(deltas)) == 1 and deltas[0] != 0
-
-    def check_timestamp(self, fragments, **kwargs):
-        """Rule 3: Timestamp within T_cap +/- 86400s"""
-        if len(fragments[0]) != 4: return False
-        try:
-            vals = [int.from_bytes(f, 'big') for f in fragments]
-            # Check if all values fall within the 1-day window
-            return all(abs(v - self.t_cap) <= 86400 for v in vals)
-        except:
+    @staticmethod
+    def is_sequence(fragments):
+        """Rule 2: Monotonic Sequence Number (v_{i+1} = v_i + 1)."""
+        valid = [f for f in fragments if f is not None]
+        if len(valid) < 3:
             return False
 
-    def check_sparse(self, fragments, **kwargs):
-        """Rule 4: Sparse Value (Unique ratio <= 0.02 and 0 not in V_unique)"""
-        vals = [int.from_bytes(f, 'big') for f in fragments]
-        unique_vals = set(vals)
-        ratio = len(unique_vals) / len(vals)
-        return ratio <= 0.02 and 0 not in unique_vals
-
-    def check_address(self, fragments, **kwargs):
-        """Rule 5: Address (Field alternation with cross-correlation rho <= -0.8)"""
-        if len(fragments) < 2: return False
-        vals = [int.from_bytes(f, 'big') for f in fragments]
-        
-        # Simulate cross-correlation of alternating sequences
-        v1 = vals[:-1]
-        v2 = vals[1:]
-        if np.std(v1) == 0 or np.std(v2) == 0:
-            return False
-            
-        rho = np.corrcoef(v1, v2)[0, 1]
-        return not np.isnan(rho) and rho <= -0.8
-
-    def check_checksum(self, fragments, full_messages, offset):
-        """Rule 6: Checksum (Simplified XOR-8 test)"""
-        # Exclude the current offset from the XOR calculation of the full message
-        for frag, msg in zip(fragments, full_messages):
-            chk_byte = frag[0]
-            msg_xor = 0
-            for i, b in enumerate(msg):
-                if i != offset:
-                    msg_xor ^= b
-            if msg_xor != chk_byte:
+        nums = []
+        for v in valid:
+            if isinstance(v, (bytes, bytearray)):
+                nums.append(int.from_bytes(v, 'big'))
+            elif isinstance(v, int):
+                nums.append(v)
+            else:
                 return False
-        return True
+
+        diffs = np.diff(nums)
+        return bool(np.all(diffs == 1))
+
+    @staticmethod
+    def is_timestamp(fragments):
+        """Rule 3: Monotonic Timestamp (v_{i+1} >= v_i)."""
+        valid = [f for f in fragments if f is not None]
+        if len(valid) < 3:
+            return False
+
+        nums = []
+        for v in valid:
+            if isinstance(v, (bytes, bytearray)):
+                nums.append(int.from_bytes(v, 'big'))
+            elif isinstance(v, int):
+                nums.append(v)
+            else:
+                return False
+
+        diffs = np.diff(nums)
+        return bool(np.all(diffs >= 0) and np.max(nums) > np.min(nums))
+
+    @classmethod
+    def identify_boundary(cls, X):
+        """
+        Identifies FOR-NFOR Boundary B.
+        Finds the end offset of the contiguous fixed header region starting from offset 0.
+        """
+        if not X:
+            return 0, set()
+
+        min_len = min(len(msg) for msg in X)
+        semantic_hits = set()
+
+        offset = 0
+        while offset < min_len:
+            matched_width = 0
+
+            # Evaluate candidate structural widths (4, 2, 1) at current offset
+            for width in (4, 2, 1):
+                if offset + width <= min_len:
+                    fragments = [msg[offset:offset + width] for msg in X]
+
+                    # Multi-byte sequence/timestamp anchors
+                    if width >= 2 and (cls.is_timestamp(fragments) or cls.is_sequence(fragments)):
+                        matched_width = width
+                        break
+                    # Leading fixed-header constants (e.g. Magic / Version bytes)
+                    elif cls.is_constant(fragments) and offset <= 2:
+                        matched_width = width
+                        break
+
+            if matched_width > 0:
+                for p in range(offset, offset + matched_width):
+                    semantic_hits.add(p)
+                offset += matched_width
+            else:
+                # If offset == 0 and no anchor matched (e.g., leading 1-byte OpCode before Timestamp),
+                # check if a valid structural anchor starts within the next few bytes
+                if offset == 0:
+                    found_anchor = False
+                    for skip in range(1, min(4, min_len)):
+                        for w in (4, 2):
+                            if skip + w <= min_len:
+                                frags = [msg[skip:skip + w] for msg in X]
+                                if cls.is_timestamp(frags) or cls.is_sequence(frags) or cls.is_constant(frags):
+                                    offset = skip
+                                    found_anchor = True
+                                    break
+                        if found_anchor:
+                            break
+                    if not found_anchor:
+                        break
+                else:
+                    break
+
+        boundary_B = max(offset, max(semantic_hits) + 1 if semantic_hits else 0)
+        return boundary_B, semantic_hits

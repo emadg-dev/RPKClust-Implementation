@@ -1,3 +1,3 @@
-from .generate_data import generate_simple_for, generate_nfor_tlv, generate_high_dimensional
+from .generate_data import generate_generic_for_dataset, generate_generic_nfor_dataset
 
-__all__ = ["generate_simple_for", "generate_nfor_tlv", "generate_high_dimensional"]
+__all__ = ["generate_generic_for_dataset", "generate_generic_nfor_dataset"]

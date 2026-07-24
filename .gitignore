@@ -1,3 +1,4 @@
 rpkclust/__pycache__/
 results/
 *.pyc
+.vscode/

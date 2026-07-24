@@ -1,84 +1,121 @@
+"""
+RPKClust Bayesian Inference Engine (optimizer.py)
+Fully compliant with RPKClust two-stage Bayesian probability formulations.
+"""
+
 import numpy as np
-from .utils import compute_empirical_bit_prob
+
+
+def _val_to_int(v):
+    """Safely converts candidate field values to integer representation."""
+    if isinstance(v, int):
+        return v
+    if isinstance(v, (bytes, bytearray)):
+        return int.from_bytes(v, 'big')
+    if isinstance(v, tuple):
+        b_list = []
+        for item in v:
+            if isinstance(item, (bytes, bytearray)):
+                b_list.append(item)
+            elif isinstance(item, int):
+                b_list.append(bytes([item]))
+        return int.from_bytes(b''.join(b_list), 'big')
+    if isinstance(v, str):
+        return int.from_bytes(v.encode('utf-8'), 'big')
+    return int(v)
+
 
 class RPKClustOptimizer:
     """
-    Handles the Two-Stage Bayesian Inference logic for Keyword selection.
+    Two-Stage Bayesian Inference Model for Protocol Keyword Identification.
     """
-    def __init__(self):
-        pass
 
-    def compute_stage1_prior(self, values):
+    def compute_stage1_prior(self, values, total_msgs=None):
         """
-        Calculates Stage 1 Prior Probability (p_f).
-        Paper Note: Replaces missing Netplier constraints with a distributional heuristic.
-        Keywords usually have a bounded distinct value count.
-        """
-        valid_vals = [v for v in values if v is not None]
-        if not valid_vals:
-            return 1e-5
-            
-        unique_count = len(set(valid_vals))
-        total_count = len(valid_vals)
-        ratio = unique_count / total_count
+        Calculates Stage-1 Prior P(f) = N_f / N.
         
-        # Heuristic: True keywords are not constants (ratio > 0) 
-        # and not completely random payloads (ratio < 0.5)
-        if unique_count < 2:
-            return 0.01  # Too constant to be a clustering keyword
-        elif ratio > 0.5:
-            return 0.05  # Too random/high-entropy
-        else:
-            # Good candidate range (e.g., OpCodes, Message Types)
-            return 0.85
+        N_f: Number of messages containing candidate field f.
+        N: Total number of messages in trace X.
+        """
+        if total_msgs is None:
+            total_msgs = len(values)
+
+        if total_msgs == 0:
+            return 1e-6
+
+        valid_vals = [v for v in values if v is not None]
+        n_f = len(valid_vals)
+
+        p_f = n_f / total_msgs
+        return float(np.clip(p_f, 1e-6, 1.0 - 1e-6))
 
     def compute_p_bit(self, values):
         """
-        Calculates Bit-use Likelihood (p_bit) based on Eq 7, 8, 10.
+        Calculates Bit-Use Constraint Probability P_bit.
+        Uses Euclidean distance between empirical bit probabilities Q(k)
+        and uniform expectation baseline P(k) = 0.5.
+        
+        Note: If cardinality <= 1 (constant field), P_bit = 1e-6 as constant
+        fields carry zero information entropy and are header constants, not keywords.
         """
-        valid_vals = [int.from_bytes(v, 'big') for v in values if v is not None]
-        if not valid_vals: return 1e-5
-        
-        max_val = max(valid_vals)
-        if max_val == 0: return 1e-5
-        
-        # MSB is the position of the highest set bit (0-indexed).
-        # Use bit_length() — np.log2 fails on arbitrary-precision Python ints
-        # from int.from_bytes (e.g. long NFOR TLV payloads).
-        msb = max_val.bit_length() - 1
-        
-        # Compute empirical Q(k)
-        q_k = compute_empirical_bit_prob(values, msb)
-        
-        # Compute theoretical P(k) = 1 - 1 / 2^(MSB+1-k)
-        p_k = np.zeros(msb + 1)
-        for k in range(msb + 1):
-            p_k[k] = 1 - (1.0 / (2**(msb + 1 - k)))
-            
-        # Euclidean distance Eq 8
-        d = np.sqrt(np.sum((q_k - p_k)**2))
-        
-        # D_max normalization Eq 10 (Max possible distance in MSB+1 dimensional hypercube)
-        d_max = np.sqrt(msb + 1)
-        
-        p_bit = 1 - (d / (d_max + 1e-9))
-        return max(p_bit, 1e-5) # Ensure strictly positive
+        valid_vals = [_val_to_int(v) for v in values if v is not None]
+        if not valid_vals:
+            return 1e-6
 
-    def compute_p_offset(self, cand_type, offset):
-        """
-        Calculates Position Likelihood (p_offset) based on Eq 11.
-        """
-        if cand_type == 'FOR':
-            return max(0.95 - 0.01 * offset, 0.7)
+        # Constant field filter: single unique value holds zero keyword information
+        if len(set(valid_vals)) <= 1:
+            return 1e-6
+
+        max_val = max(valid_vals)
+        num_bits = max_val.bit_length() if max_val > 0 else 8
+
+        # Calculate empirical bit probability Q(k) across all valid values
+        q_k = np.zeros(num_bits)
+        for val in valid_vals:
+            for k in range(num_bits):
+                if (val >> k) & 1:
+                    q_k[k] += 1
+        q_k /= len(valid_vals)
+
+        # Baseline expectation P(k) = 0.5 (maximum entropy baseline)
+        p_k = np.full(num_bits, 0.5)
+
+        # Euclidean distance D = sqrt(sum((Q(k) - P(k))^2))
+        euclidean_dist = np.sqrt(np.sum((q_k - p_k) ** 2))
+        max_dist = np.sqrt(num_bits * (0.5 ** 2))
+
+        if max_dist == 0:
+            p_bit = 1e-6
         else:
-            return 0.6  # NFOR constant
+            p_bit = euclidean_dist / max_dist
+
+        return float(np.clip(p_bit, 1e-6, 1.0 - 1e-6))
+
+    def compute_p_offset(self, candidate_type, offset=0, boundary_B=0):
+        """
+        Calculates Position Prior P_offset using monotonic distance decay.
+        """
+        if candidate_type == 'FOR':
+            rel_offset = max(0, offset)
+        else:
+            rel_offset = max(0, offset - boundary_B)
+
+        p_offset = 1.0 / (1.0 + rel_offset)
+        return float(np.clip(p_offset, 1e-6, 1.0 - 1e-6))
 
     def bayesian_update(self, p_bit, p_offset, p_f):
         """
-        Computes final probability P(K=1) via Bayesian Update (Eq 15).
-        """
-        M = p_bit * p_offset * p_f
-        N = (1 - p_bit) * (1 - p_offset) * (1 - p_f)
+        Computes Bayesian Posterior Probability P(K=1 | D).
         
-        # Add epsilon for numerical stability
-        return M / (M + N + 1e-9)
+        Likelihood P(D | K=1) = P_bit * P_offset
+        Prior P(K=1) = P_f
+        """
+        likelihood = p_bit * p_offset
+        prior = p_f
+
+        numerator = likelihood * prior
+        denominator = numerator + ((1.0 - likelihood) * (1.0 - prior))
+
+        if denominator <= 0:
+            return 1e-6
+        return float(np.clip(numerator / denominator, 1e-6, 1.0 - 1e-6))
