@@ -5,7 +5,7 @@ from sklearn.decomposition import PCA
 import numpy as np
 from experiments.parameter_analysis import analyze_offset_shift_impact
 
-from datasets import generate_simple_for, generate_nfor_tlv, generate_high_dimensional
+from datasets import generate_generic_for_dataset, generate_generic_nfor_dataset
 from rpkclust import RPKClust
 from rpkclust.metrics import convert_bytes_to_feature_matrix
 from experiments.compare_baselines import run_baseline_comparison
@@ -22,7 +22,7 @@ def run_all_experiments():
     
     # 1. Benchmark on Dataset 1: Simple FOR
     print("\n[1/3] Benchmarking Dataset 1: Simple FOR (OpCode)...")
-    m1, l1 = generate_simple_for(n=600)
+    m1, l1 = generate_generic_for_dataset()
     res_df1 = run_baseline_comparison(m1, l1)
     res_df1.to_csv("results/tables/dataset1_for_results.csv", index=False)
     print(res_df1.to_string(index=False))
@@ -31,35 +31,14 @@ def run_all_experiments():
     
     # 2. Benchmark on Dataset 2: NFOR TLV
     print("\n[2/3] Benchmarking Dataset 2: NFOR TLV (DHCP-style)...")
-    m2, l2 = generate_nfor_tlv(n=600)
+    m2, l2 = generate_generic_nfor_dataset()
     res_df2 = run_baseline_comparison(m2, l2)
     res_df2.to_csv("results/tables/dataset2_nfor_results.csv", index=False)
     print(res_df2.to_string(index=False))
 
     generate_benchmark_barchart(res_df2, "Performance Comparison: NFOR TLV", "benchmark_nfor_barchart.png")
     
-    # 3. Scalability Analysis & Visualization on High-Dim Data
-    print("\n[3/3] Generating High-Dimensional Visualizations & Scalability Plot...")
-    m3, l3 = generate_high_dimensional(n=600, feature_len=128, n_clusters=4)
-    X3 = convert_bytes_to_feature_matrix(m3)
     
-    rpk3 = RPKClust()
-    pred3 = rpk3.fit_predict(m3)
-    
-    # Plot PCA Comparison (Ground Truth vs RPKClust Output)
-    pca = PCA(n_components=2, random_state=42)
-    X_pca = pca.fit_transform(X3)
-    
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    sns.scatterplot(x=X_pca[:, 0], y=X_pca[:, 1], hue=l3, palette="Set1", ax=axes[0], s=50)
-    axes[0].set_title("Ground Truth Clusters")
-    
-    sns.scatterplot(x=X_pca[:, 0], y=X_pca[:, 1], hue=pred3, palette="viridis", ax=axes[1], s=50)
-    axes[1].set_title(f"RPKClust Output (Boundary B={rpk3.boundary_B})")
-    
-    plt.tight_layout()
-    plt.savefig("results/figures/rpkclust_pca_projection.png", dpi=300)
-    plt.close()
     
     # Scalability Plot
     df_scale = analyze_sample_size_scalability()
@@ -74,13 +53,6 @@ def run_all_experiments():
     plt.tight_layout()
     plt.savefig("results/figures/rpkclust_scalability.png", dpi=300)
     plt.close()
-
-    # Extract Internal Mechanics for Question 2
-    print("\n[+] Extracting Internal Bayesian Candidate Rankings...")
-    rpk_demo = RPKClust()
-    rpk_demo.fit(m2) # Fit on NFOR dataset
-    cand_df = rpk_demo.get_candidate_summary()
-    cand_df.to_csv("results/tables/internal_bayesian_rankings.csv", index=False)
     
     # Run Variable Offset Stress Test for Question 1 & 5
     print("\n[+] Running Offset Shift Stress Test...")

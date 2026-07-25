@@ -12,7 +12,7 @@ def extract_for_candidates(X, boundary_B, widths=(1, 2, 4)):
     Extracts fixed byte slice candidates for offsets < boundary_B.
     """
     candidates = []
-    if not X or boundary_B <= 0:
+    if (X is None or len(X) == 0) or boundary_B <= 0:
         return candidates
 
     min_len = min(len(msg) for msg in X)

@@ -25,7 +25,7 @@ class RPKClust:
         """
         Executes RPKClust pipeline on binary message trace X.
         """
-        if not X:
+        if X is None or len(X) == 0:
             return self
 
         # Step 1: Boundary Identification

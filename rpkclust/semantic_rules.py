@@ -17,7 +17,10 @@ class SemanticRules:
         valid = [f for f in fragments if f is not None]
         if not valid:
             return False
-        return len(set(valid)) == 1
+        
+        # Compare all elements against the first element safely
+        first = valid[0]
+        return all(np.array_equal(first, f) for f in valid[1:])
 
     @staticmethod
     def is_sequence(fragments):
@@ -63,7 +66,7 @@ class SemanticRules:
         Identifies FOR-NFOR Boundary B.
         Finds the end offset of the contiguous fixed header region starting from offset 0.
         """
-        if not X:
+        if X is None or len(X) == 0:
             return 0, set()
 
         min_len = min(len(msg) for msg in X)

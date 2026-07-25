@@ -2,11 +2,11 @@ import time
 import pandas as pd
 import matplotlib.pyplot as plt
 from rpkclust import RPKClust
-from datasets.generate_data import generate_simple_for
+from datasets.generate_data import generate_generic_for_dataset
 from sklearn.cluster import KMeans
 from sklearn.metrics import adjusted_rand_score
 from rpkclust.metrics import convert_bytes_to_feature_matrix
-from datasets.generate_data import generate_nfor_tlv
+from datasets.generate_data import generate_generic_nfor_dataset
 
 def analyze_sample_size_scalability(sample_sizes=[100, 250, 500, 1000, 2000]):
     """
@@ -14,7 +14,7 @@ def analyze_sample_size_scalability(sample_sizes=[100, 250, 500, 1000, 2000]):
     """
     records = []
     for n in sample_sizes:
-        messages, labels = generate_simple_for(n=n)
+        messages, labels = generate_generic_for_dataset(num_messages=n)
         
         t0 = time.time()
         model = RPKClust()
@@ -40,10 +40,10 @@ def analyze_offset_shift_impact(max_pad_lengths=[0, 5, 10, 20, 50, 100]):
     
     for pad in max_pad_lengths:
         # Generate data with increasing NFOR padding variance
-        # We temporarily patch generate_nfor_tlv to accept max_pad_len in this loop
+        # We temporarily patch generate_generic_nfor_dataset to accept max_pad_len in this loop
         import numpy as np
         np.random.seed(42)
-        m, l_true = generate_nfor_tlv(n=400) 
+        m, l_true = generate_generic_nfor_dataset(num_messages=400) 
         
         # Manually introduce extreme padding variance for this test
         m_shifted = []
