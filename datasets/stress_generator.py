@@ -24,6 +24,9 @@ class BinaryProtocolStressGenerator:
 
         for i in range(self.num_messages):
             opcode = int(self.rng.choice(opcodes))
+            magic = 0xABCD
+            version = 1
+            sequence = i
             
             # 1. Non-monotonic timestamp noise (simulates out-of-order packets)
             if self.rng.random() < self.noise_level:
@@ -31,8 +34,21 @@ class BinaryProtocolStressGenerator:
             else:
                 timestamp = 1000 + i
 
+                if self.rng.random() < self.noise_level:
+                    sequence = int(self.rng.integers(0, 5000))
+                else:
+                    sequence = i
+
             # 2. Header binary packing
-            header = struct.pack('>BI', opcode, timestamp)
+
+            header = struct.pack(
+                ">HBBII",
+                magic,
+                version,
+                opcode,
+                timestamp,
+                sequence
+            )
 
             # 3. Dynamic/corrupted TLV noise payload
             if self.rng.random() < self.noise_level:
@@ -43,7 +59,19 @@ class BinaryProtocolStressGenerator:
                 payload = struct.pack('>BB', tlv_tag, tlv_len) + tlv_val
             else:
                 # Valid TLV Option
-                payload = struct.pack('>BBB', 0x0A, 1, opcode)
+                tlvs = [
+                    struct.pack(">BBB",0x0A,1,opcode)
+                ]
+
+                if self.rng.random() < 0.5:
+                    data = self.rng.bytes(4)
+                    tlvs.append(
+                        struct.pack(">BB",0x0B,4)+data
+                    )
+
+                self.rng.shuffle(tlvs)
+
+                payload = b"".join(tlvs)
 
             msg = header + payload
             X.append(msg)

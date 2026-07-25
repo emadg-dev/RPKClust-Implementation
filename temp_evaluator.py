@@ -48,7 +48,7 @@ def run_rpkclust_diagnostics(X, y_true, dataset_name="Dataset"):
         print(f" Rank {rank}: {cand['tag']} ({cand['type']})")
         print(f"   -> p_bit    = {cand['p_bit']:.4f}")
         print(f"   -> p_offset = {cand['p_offset']:.4f}")
-        print(f"   -> p_f      = {cand['p_f']:.4f}")
+        print(f"   -> Stage1   = {cand['stage1_prob']:.4f}")
         print(f"   -> Posterior P(K=1|D) = {cand['prob']:.4f}")
 
     # 4. Clustering Performance Metrics
@@ -65,4 +65,9 @@ def run_rpkclust_diagnostics(X, y_true, dataset_name="Dataset"):
     print(f"V-Measure:    {v:.4f}")
     print(f"ARI:          {ari:.4f}")
     print(f"NMI:          {nmi:.4f}")
+    print(f"Clusters Found : {len(np.unique(y_pred))}")
+    print(f"\nBest Candidate")
+    print(model.best_candidate["tag"])
+    print(model.best_candidate["type"])
+    print(model.best_candidate["prob"])
     print(f"==================================================\n")

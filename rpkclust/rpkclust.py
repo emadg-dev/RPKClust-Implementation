@@ -40,13 +40,24 @@ class RPKClust:
         # Step 3: Two-Stage Bayesian Inference
         total_msgs = len(X)
         for cand in self.candidates:
-            cand['p_f'] = self.optimizer.compute_stage1_prior(cand['values'], total_msgs)
-            cand['p_bit'] = self.optimizer.compute_p_bit(cand['values'])
+            cand['stage1_prob'] = (
+                self.optimizer.compute_stage1_probability(
+                    cand,
+                    X
+                )
+            )
+            cand['p_bit'] = self.optimizer.compute_p_bit(
+                cand['values']
+            )
             cand['p_offset'] = self.optimizer.compute_p_offset(
-                cand['type'], cand.get('offset', 0), self.boundary_B
+                cand['type'],
+                cand.get('offset', 0),
+                self.boundary_B
             )
             cand['prob'] = self.optimizer.bayesian_update(
-                cand['p_bit'], cand['p_offset'], cand['p_f']
+                cand['p_bit'],
+                cand['p_offset'],
+                cand['stage1_prob']
             )
 
         # Step 4: Keyword Selection

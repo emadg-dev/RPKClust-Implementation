@@ -10,7 +10,7 @@ class SemanticRules:
     """
     Evaluates semantic rules for boundary detection and field profiling.
     """
-
+    
     @staticmethod
     def is_constant(fragments):
         """Rule 1: Constant Field (Zero Variance across non-None values)."""
@@ -71,13 +71,16 @@ class SemanticRules:
 
         min_len = min(len(msg) for msg in X)
         semantic_hits = set()
+        MAX_HEADER_SCAN = min(32, min_len)
+        MAX_SKIP = min(8, min_len)
+        CANDIDATE_WIDTHS = [8,4,2,1]
 
         offset = 0
         while offset < min_len:
             matched_width = 0
 
             # Evaluate candidate structural widths (4, 2, 1) at current offset
-            for width in (4, 2, 1):
+            for width in CANDIDATE_WIDTHS:
                 if offset + width <= min_len:
                     fragments = [msg[offset:offset + width] for msg in X]
 
@@ -86,7 +89,8 @@ class SemanticRules:
                         matched_width = width
                         break
                     # Leading fixed-header constants (e.g. Magic / Version bytes)
-                    elif cls.is_constant(fragments) and offset <= 2:
+                    # elif cls.is_constant(fragments) and offset <= 2:
+                    elif cls.is_constant(fragments) and offset < MAX_HEADER_SCAN:
                         matched_width = width
                         break
 
@@ -99,7 +103,7 @@ class SemanticRules:
                 # check if a valid structural anchor starts within the next few bytes
                 if offset == 0:
                     found_anchor = False
-                    for skip in range(1, min(4, min_len)):
+                    for skip in range(1, MAX_SKIP):
                         for w in (4, 2):
                             if skip + w <= min_len:
                                 frags = [msg[skip:skip + w] for msg in X]

@@ -34,13 +34,13 @@ def main():
 
     # 1. Generic Fixed-Offset Region (FOR) Dataset
     print("=== Running Generic FOR Diagnostics ===")
-    X_for, y_for = generate_generic_for_dataset(num_messages=100000, seed=54761161)
+    X_for, y_for = generate_generic_for_dataset(num_messages=1000, seed=54761161)
     run_rpkclust_diagnostics(X_for, y_for, dataset_name="Generic Fixed-Offset (FOR)")
 
     # 2. Generic Non-Fixed-Offset Region (NFOR TLV) Dataset
     print("\n=== Running Generic NFOR TLV Diagnostics ===")
     X_nfor, y_nfor = generate_generic_nfor_dataset(
-        num_messages=100000, seed=841561854
+        num_messages=1000, seed=841561854
     )
     run_rpkclust_diagnostics(
         X_nfor, y_nfor, dataset_name="Generic Non-Fixed-Offset (NFOR TLV)"
@@ -48,7 +48,7 @@ def main():
 
     # 3. Binary Stress Test Dataset
     print("\n=== Running Binary Protocol Stress Test ===")
-    stress_gen = BinaryProtocolStressGenerator(num_messages=100000, noise_level=0.15, seed=4151684516)
+    stress_gen = BinaryProtocolStressGenerator(num_messages=1000, noise_level=0.15, seed=4151684516)
     X_stress, y_stress = stress_gen.generate()
 
     run_rpkclust_diagnostics(

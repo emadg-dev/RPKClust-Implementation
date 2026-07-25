@@ -4,7 +4,7 @@ Fully compliant with RPKClust two-stage Bayesian probability formulations.
 """
 
 import numpy as np
-
+from .constraints import ClusteringConstraints
 
 def _val_to_int(v):
     """Safely converts candidate field values to integer representation."""
@@ -30,24 +30,135 @@ class RPKClustOptimizer:
     Two-Stage Bayesian Inference Model for Protocol Keyword Identification.
     """
 
-    def compute_stage1_prior(self, values, total_msgs=None):
-        """
-        Calculates Stage-1 Prior P(f) = N_f / N.
-        
-        N_f: Number of messages containing candidate field f.
-        N: Total number of messages in trace X.
-        """
-        if total_msgs is None:
-            total_msgs = len(values)
+    def compute_stage1_probability(self, candidate, X):
 
-        if total_msgs == 0:
+        values = candidate["values"]
+
+        labels = self.cluster_by_candidate(values)
+
+
+        c1 = ClusteringConstraints.message_similarity(
+            labels,
+            X
+        )
+
+        c2 = ClusteringConstraints.remote_coupling(
+            labels,
+            X
+        )
+
+        c3 = ClusteringConstraints.structural_consistency(
+            labels,
+            candidate
+        )
+
+        c4 = ClusteringConstraints.dimensional_constraint(
+            labels
+        )
+
+
+        return self.constraint_bayesian_update(
+            c1,
+            c2,
+            c3,
+            c4
+        )
+
+    def cluster_by_candidate(self, values):
+
+        mapping = {}
+        labels = []
+
+        for v in values:
+
+            if isinstance(v, bytes):
+                key = v
+            else:
+                key = str(v)
+
+            if key not in mapping:
+                mapping[key] = len(mapping)
+
+            labels.append(mapping[key])
+
+        return np.array(labels)
+
+    def constraint_bayesian_update(
+        self,
+        c1,
+        c2,
+        c3,
+        c4
+    ):
+        constraints = np.array(
+            [
+                c1,
+                c2,
+                c3,
+                c4
+            ],
+            dtype=float
+        )
+
+
+        # Remove invalid values
+        constraints = np.clip(
+            constraints,
+            1e-6,
+            1 - 1e-6
+        )
+
+
+        # Prior probability of a random candidate being keyword
+        #
+        # Usually keyword fields are rare among all candidates.
+        #
+        # A small prior avoids every candidate becoming keyword.
+        prior = 0.1
+
+
+        # Likelihood if candidate is a real keyword
+        likelihood_keyword = np.prod(
+            constraints
+        )
+
+
+        # Likelihood if candidate is not keyword
+        likelihood_not_keyword = np.prod(
+            1 - constraints
+        )
+
+
+        numerator = (
+            likelihood_keyword *
+            prior
+        )
+
+
+        denominator = (
+            numerator +
+            likelihood_not_keyword *
+            (1 - prior)
+        )
+
+
+        if denominator == 0:
             return 1e-6
 
-        valid_vals = [v for v in values if v is not None]
-        n_f = len(valid_vals)
 
-        p_f = n_f / total_msgs
-        return float(np.clip(p_f, 1e-6, 1.0 - 1e-6))
+        posterior = (
+            numerator /
+            denominator
+        )
+
+
+        return float(
+            np.clip(
+                posterior,
+                1e-6,
+                1 - 1e-6
+            )
+        )
 
     def compute_p_bit(self, values):
         """
@@ -91,7 +202,7 @@ class RPKClustOptimizer:
 
         return float(np.clip(p_bit, 1e-6, 1.0 - 1e-6))
 
-    def compute_p_offset(self, candidate_type, offset=0, boundary_B=0):
+    def compute_p_offset(self, candidate_type, offset=0, boundary_B=0, alpha=0.15):
         """
         Calculates Position Prior P_offset using monotonic distance decay.
         """
@@ -100,7 +211,7 @@ class RPKClustOptimizer:
         else:
             rel_offset = max(0, offset - boundary_B)
 
-        p_offset = 1.0 / (1.0 + rel_offset)
+        p_offset = np.exp(-alpha * rel_offset)
         return float(np.clip(p_offset, 1e-6, 1.0 - 1e-6))
 
     def bayesian_update(self, p_bit, p_offset, p_f):
@@ -119,3 +230,5 @@ class RPKClustOptimizer:
         if denominator <= 0:
             return 1e-6
         return float(np.clip(numerator / denominator, 1e-6, 1.0 - 1e-6))
+
+

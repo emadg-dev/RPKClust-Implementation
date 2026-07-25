@@ -21,13 +21,27 @@ def generate_generic_for_dataset(num_messages=200, seed=42):
     opcodes = [0x01, 0x02, 0x03, 0x04]
 
     for i in range(num_messages):
+        magic = 0xABCD
+        version = 1
         opcode = int(np.random.choice(opcodes))
         timestamp = 1000 + i
+        sequence = i
         # Explicitly specify 64-bit integer type to accommodate 32-bit unsigned upper bound (0xFFFFFFFF)
-        random_payload = int(np.random.randint(0, 0xFFFFFFFF, dtype=np.int64))
+        # random_payload = int(np.random.randint(0, 0xFFFFFFFF, dtype=np.int64))
+        payload = np.random.bytes(np.random.randint(4,17))
 
         # Binary packing: OpCode (1B), Timestamp (4B), Random Payload (4B)
-        msg = struct.pack('>BI I', opcode, timestamp, random_payload)
+        # msg = struct.pack('>BI I', opcode, timestamp, random_payload)
+        msg = (
+            struct.pack(">HBBII",
+                magic,
+                version,
+                opcode,
+                timestamp,
+                sequence
+            )
+            + payload
+        )
         X.append(msg)
         y.append(opcode)
 
@@ -36,29 +50,66 @@ def generate_generic_for_dataset(num_messages=200, seed=42):
 
 def generate_generic_nfor_dataset(num_messages=200, seed=42):
     """
-    Generates generic Non-Fixed-Offset Region (NFOR) TLV binary message trace.
-    Bytes 0-3: Fixed Timestamp Header (Boundary B = 4)
-    Bytes 4+: Dynamic TLV options, including a primary command TLV option.
+    Generates a generic NFOR TLV dataset.
+
+    Header (Boundary B = 7):
+        Magic      : 2 Bytes
+        Version    : 1 Byte
+        Timestamp  : 4 Bytes
+
+    Body:
+        TLV Command (required)
+        TLV Data (required)
+        TLV Optional (30% probability)
     """
     np.random.seed(seed)
+
     X = []
     y = []
 
     cmd_values = [0x10, 0x20, 0x30, 0x40]
 
     for i in range(num_messages):
+
         cmd_val = int(np.random.choice(cmd_values))
+
+        # ---------- Header ----------
+        magic = 0xABCD
+        version = 1
         timestamp = 2000 + i
-        header = struct.pack('>I', timestamp)
 
-        # TLV Option 1 (Command Keyword: Tag 0x0A, Length 1, Value cmd_val)
-        tlv_cmd = struct.pack('>BBB', 0x0A, 1, cmd_val)
+        header = struct.pack(">HBI", magic, version, timestamp)
 
-        # TLV Option 2 (Generic Data: Tag 0x0B, Length 2, Arbitrary Value)
-        rand_val = int(np.random.randint(100, 200))
-        tlv_data = struct.pack('>BBH', 0x0B, 2, rand_val)
+        # ---------- Required Command TLV ----------
+        tlv_cmd = struct.pack(">BBB", 0x0A, 1, cmd_val)
 
-        msg = header + tlv_cmd + tlv_data
+        # ---------- Required Data TLV ----------
+        data_len = np.random.randint(2, 9)      # 2~8 bytes
+        data = np.random.bytes(data_len)
+        tlv_data = (
+            struct.pack(">BB", 0x0B, data_len)
+            + data
+        )
+
+        tlvs = [tlv_cmd, tlv_data]
+
+        # ---------- Optional TLV ----------
+        if np.random.rand() < 0.30:
+            opt_len = np.random.randint(1, 5)
+            opt_data = np.random.bytes(opt_len)
+
+            tlv_optional = (
+                struct.pack(">BB", 0x0C, opt_len)
+                + opt_data
+            )
+
+            tlvs.append(tlv_optional)
+
+        # ---------- Random TLV Order ----------
+        np.random.shuffle(tlvs)
+
+        msg = header + b"".join(tlvs)
+
         X.append(msg)
         y.append(cmd_val)
 
