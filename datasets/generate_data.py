@@ -1,116 +1,164 @@
 """
-RPKClust Generic Dataset Generator (dataset_generator.py / generate_data.py)
-Generates generic binary message traces for FOR and NFOR benchmark evaluation.
+RPKClust Generic Dataset Generator (generate_data.py)
+Generates synthetic binary message traces for Fixed-Offset Region (FOR) 
+and Non-Fixed-Offset Region (NFOR TLV) benchmark evaluation.
 """
 
 import struct
+from typing import List, Tuple, Dict, Any, Optional
 import numpy as np
 
 
-def generate_generic_for_dataset(num_messages=200, seed=42):
+class GenericDatasetGenerator:
     """
-    Generates generic Fixed-Offset Region (FOR) binary message trace.
-    Offset 0: OpCode (Keyword determining cluster label)
-    Offset 1-4: Sequential Timestamp
-    Offset 5-8: Random Payload
+    Object-oriented generator for synthetic protocol traffic datasets.
+    Provides structured ground-truth metadata alongside binary payloads.
     """
-    np.random.seed(seed)
-    X = []
-    y = []
 
-    opcodes = [0x01, 0x02, 0x03, 0x04]
+    def __init__(self, seed: int = 42):
+        self.seed = seed
 
-    for i in range(num_messages):
-        magic = 0xABCD
-        version = 1
-        opcode = int(np.random.choice(opcodes))
-        timestamp = 1000 + i
-        sequence = i
-        # Explicitly specify 64-bit integer type to accommodate 32-bit unsigned upper bound (0xFFFFFFFF)
-        # random_payload = int(np.random.randint(0, 0xFFFFFFFF, dtype=np.int64))
-        payload = np.random.bytes(np.random.randint(4,17))
+    def generate_for_dataset(
+        self, num_messages: int = 1000
+    ) -> Tuple[List[bytes], np.ndarray, Dict[str, Any]]:
+        """
+        Generates a generic Fixed-Offset Region (FOR) binary message dataset.
 
-        # Binary packing: OpCode (1B), Timestamp (4B), Random Payload (4B)
-        # msg = struct.pack('>BI I', opcode, timestamp, random_payload)
-        msg = (
-            struct.pack(">HBBII",
-                magic,
-                version,
-                opcode,
-                timestamp,
-                sequence
-            )
-            + payload
-        )
-        X.append(msg)
-        y.append(opcode)
+        Structure (Total fixed header = 12 bytes):
+            - Magic Constant  (2B) : Offset 0..1 (0xABCD)
+            - Version         (1B) : Offset 2    (0x01)
+            - OpCode / Type   (1B) : Offset 3    [KEYWORD -> Cluster Ground Truth]
+            - Timestamp       (4B) : Offset 4..7 (Sequential integer)
+            - Sequence Num    (4B) : Offset 8..11 (Sequential integer)
+            - Variable Body   (4-16B): Random Payload
 
-    return X, np.array(y, dtype=int)
+        Returns:
+            X (List[bytes]): List of binary messages.
+            y (np.ndarray): Target cluster labels (derived from OpCode).
+            metadata (Dict[str, Any]): Ground-truth parameters for evaluation.
+        """
+        np.random.seed(self.seed)
+        X: List[bytes] = []
+        y: List[int] = []
+
+        opcodes = [0x01, 0x02, 0x03, 0x04]
+
+        for i in range(num_messages):
+            magic = 0xABCD
+            version = 1
+            opcode = int(np.random.choice(opcodes))
+            timestamp = 10000 + i
+            sequence = i
+            
+            # Variable length tail payload
+            payload_len = int(np.random.randint(4, 17))
+            payload = np.random.bytes(payload_len)
+
+            # Pack fixed header (12 bytes total)
+            fixed_header = struct.pack(">HBBII", magic, version, opcode, timestamp, sequence)
+            msg = fixed_header + payload
+
+            X.append(msg)
+            y.append(opcode)
+
+        metadata = {
+            "dataset_type": "FOR",
+            "true_boundary_B": 12,        # Fixed header portion
+            "true_keyword_offset": 3,     # OpCode byte index
+            "true_keyword_width": 1,
+            "num_clusters": len(opcodes),
+        }
+
+        return X, np.array(y, dtype=int), metadata
+
+    def generate_nfor_dataset(
+        self, num_messages: int = 1000
+    ) -> Tuple[List[bytes], np.ndarray, Dict[str, Any]]:
+        """
+        Generates a generic Non-Fixed-Offset Region (NFOR TLV) binary message dataset.
+
+        Header (Fixed Boundary B = 7 bytes):
+            - Magic Constant (2B) : Offset 0..1 (0xABCD)
+            - Version        (1B) : Offset 2    (0x01)
+            - Timestamp      (4B) : Offset 3..6
+
+        Body (Variable NFOR TLV Region):
+            - Command TLV  (Type=0x0A, Len=1, Value=[0x10, 0x20, 0x30, 0x40]) -> Target Keyword
+            - Data TLV     (Type=0x0B, Len=2..8, Data=random)
+            - Optional TLV (Type=0x0C, Len=1..4, Data=random) [30% occurrence]
+
+        Returns:
+            X (List[bytes]): List of binary messages.
+            y (np.ndarray): Target cluster labels (derived from Command TLV value).
+            metadata (Dict[str, Any]): Ground-truth parameters for evaluation.
+        """
+        np.random.seed(self.seed)
+        X: List[bytes] = []
+        y: List[int] = []
+
+        cmd_values = [0x10, 0x20, 0x30, 0x40]
+
+        for i in range(num_messages):
+            cmd_val = int(np.random.choice(cmd_values))
+
+            # Fixed Header (7 Bytes)
+            magic = 0xABCD
+            version = 1
+            timestamp = 20000 + i
+            header = struct.pack(">HBI", magic, version, timestamp)
+
+            # Required Command TLV (3 Bytes)
+            tlv_cmd = struct.pack(">BBB", 0x0A, 1, cmd_val)
+
+            # Required Data TLV (2 + data_len Bytes)
+            data_len = int(np.random.randint(2, 9))
+            data = np.random.bytes(data_len)
+            tlv_data = struct.pack(">BB", 0x0B, data_len) + data
+
+            tlvs = [tlv_cmd, tlv_data]
+
+            # Optional TLV (30% probability)
+            if np.random.rand() < 0.30:
+                opt_len = int(np.random.randint(1, 5))
+                opt_data = np.random.bytes(opt_len)
+                tlv_optional = struct.pack(">BB", 0x0C, opt_len) + opt_data
+                tlvs.append(tlv_optional)
+
+            # Shuffle TLV sequence in the NFOR body to induce position variance
+            np.random.shuffle(tlvs)
+
+            msg = header + b"".join(tlvs)
+
+            X.append(msg)
+            y.append(cmd_val)
+
+        metadata = {
+            "dataset_type": "NFOR",
+            "true_boundary_B": 7,
+            "keyword_tag": "TLV_Type_10",
+            "num_clusters": len(cmd_values),
+        }
+
+        return X, np.array(y, dtype=int), metadata
 
 
-def generate_generic_nfor_dataset(num_messages=200, seed=42):
-    """
-    Generates a generic NFOR TLV dataset.
+# =====================================================================
+# Functional Wrapper Interface (Maintains Backward Compatibility)
+# =====================================================================
 
-    Header (Boundary B = 7):
-        Magic      : 2 Bytes
-        Version    : 1 Byte
-        Timestamp  : 4 Bytes
+def generate_generic_for_dataset(
+    num_messages: int = 1000, seed: int = 54761161
+) -> Tuple[List[bytes], np.ndarray]:
+    """Functional wrapper for generating FOR datasets."""
+    generator = GenericDatasetGenerator(seed=seed)
+    X, y, _ = generator.generate_for_dataset(num_messages=num_messages)
+    return X, y
 
-    Body:
-        TLV Command (required)
-        TLV Data (required)
-        TLV Optional (30% probability)
-    """
-    np.random.seed(seed)
 
-    X = []
-    y = []
-
-    cmd_values = [0x10, 0x20, 0x30, 0x40]
-
-    for i in range(num_messages):
-
-        cmd_val = int(np.random.choice(cmd_values))
-
-        # ---------- Header ----------
-        magic = 0xABCD
-        version = 1
-        timestamp = 2000 + i
-
-        header = struct.pack(">HBI", magic, version, timestamp)
-
-        # ---------- Required Command TLV ----------
-        tlv_cmd = struct.pack(">BBB", 0x0A, 1, cmd_val)
-
-        # ---------- Required Data TLV ----------
-        data_len = np.random.randint(2, 9)      # 2~8 bytes
-        data = np.random.bytes(data_len)
-        tlv_data = (
-            struct.pack(">BB", 0x0B, data_len)
-            + data
-        )
-
-        tlvs = [tlv_cmd, tlv_data]
-
-        # ---------- Optional TLV ----------
-        if np.random.rand() < 0.30:
-            opt_len = np.random.randint(1, 5)
-            opt_data = np.random.bytes(opt_len)
-
-            tlv_optional = (
-                struct.pack(">BB", 0x0C, opt_len)
-                + opt_data
-            )
-
-            tlvs.append(tlv_optional)
-
-        # ---------- Random TLV Order ----------
-        np.random.shuffle(tlvs)
-
-        msg = header + b"".join(tlvs)
-
-        X.append(msg)
-        y.append(cmd_val)
-
-    return X, np.array(y, dtype=int)
+def generate_generic_nfor_dataset(
+    num_messages: int = 1000, seed: int = 841561854
+) -> Tuple[List[bytes], np.ndarray]:
+    """Functional wrapper for generating NFOR datasets."""
+    generator = GenericDatasetGenerator(seed=seed)
+    X, y, _ = generator.generate_nfor_dataset(num_messages=num_messages)
+    return X, y

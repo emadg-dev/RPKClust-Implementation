@@ -9,6 +9,7 @@ from datasets.generate_data import (
     generate_generic_nfor_dataset,
 )
 from datasets.stress_generator import BinaryProtocolStressGenerator
+from datasets.dataset_loader import PcapDatasetLoader
 from temp_evaluator import RPKClustEvaluator
 
 
@@ -48,12 +49,27 @@ def main():
         true_boundary=4,
     )
 
+    # 4. Real-World PCAP Traffic Dataset (Fetched via PcapDatasetLoader)
+    print("\n" + "=" * 65)
+    print(" FETCHING & PROCESSING EXTERNAL REAL PCAP DATASET")
+    print("=" * 65)
+    pcap_loader = PcapDatasetLoader()
+    pcap_file = pcap_loader.download_pcap()
+    X_pcap, y_pcap = pcap_loader.extract_payloads(pcap_file)
+
+    evaluator.run_diagnostics(
+        X_pcap,
+        y_pcap,
+        dataset_name="Real Network PCAP Dataset",
+        true_boundary=4,
+    )
+
     # Export Aggregate Tables and Comparative Visualizations
     print("\n" + "=" * 65)
     print(" GENERATING FINAL PAPER ARTIFACTS")
     print("=" * 65)
     evaluator.export_summary_artifacts()
-    print("Evaluation Complete. All artifacts saved to results/tables/ and results/figures/\n")
+    print("\nExecution complete! Check results/tables/ and results/figures/ for output.")
 
 
 if __name__ == "__main__":
