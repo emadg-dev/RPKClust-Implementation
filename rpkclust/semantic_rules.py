@@ -1,3 +1,4 @@
+
 # RPKClust Boundary Identification & Semantic Rules (semantic_rules.py)
 # Generic evaluation of structural semantics across packet byte traces.
 
@@ -473,8 +474,8 @@ class SemanticRules:
             "name": "address",
             "widths": [2, 3, 4],
             "type": "pair",
-            "func": lambda f1, f2, w, X, offset:
-                SemanticRules.is_address(f1, f2, width=w)
+            "func": lambda f1, f2, w, X, offset, direction_labels=None:
+                SemanticRules.is_address(f1, f2, width=w, direction_labels=direction_labels)
         },
 
         {
@@ -488,6 +489,109 @@ class SemanticRules:
                 )
         },
     ]
+
+    # ------------------------------------------------------------------
+    #  Shared Semantic Region Scanner
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _scan_semantic_regions(
+        cls,
+        X: List[bytes],
+        capture_start: Optional[float] = None,
+        capture_end: Optional[float] = None,
+        timezone_offset: float = 0.0,
+        direction_labels: Optional[List[Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Shared scanner used by both identify_boundary and
+        collect_semantic_regions to avoid logic drift.
+
+        Scans ALL offsets 0..min_len-1. At each offset, tries every rule;
+        on the first rule that matches, records a semantic region dict
+        and stops trying further rules at that offset (first-match precedence).
+
+        Returns a list of regions:
+            {"name": str, "offset": int, "width": int}
+        where width is the FULL span of the matched field (2*width for
+        pair rules like address).
+        """
+        if not X:
+            return []
+
+        min_len = min(len(m) for m in X)
+        regions: List[Dict[str, Any]] = []
+
+        for offset in range(min_len):
+
+            matched_at_offset = False
+
+            for rule in cls.RULE_REGISTRY:
+
+                if matched_at_offset:
+                    break
+
+                for width in rule["widths"]:
+
+                    # ---- Single-field rules ----
+                    if rule["type"] == "single":
+
+                        if offset + width > min_len:
+                            continue
+
+                        fragments = cls._extract_fragments(X, offset, width)
+                        if fragments is None:
+                            continue
+
+                        if rule["name"] == "timestamp":
+                            matched = cls.is_timestamp(
+                                fragments,
+                                width=width,
+                                capture_start=capture_start,
+                                capture_end=capture_end,
+                                timezone_offset=timezone_offset,
+                            )
+                        else:
+                            matched = rule["func"](fragments, width, X, offset)
+
+                        if matched:
+                            regions.append({
+                                "name": rule["name"],
+                                "offset": offset,
+                                "width": width,
+                            })
+                            matched_at_offset = True
+                            break
+
+                    # ---- Pair-field rule (Address) ----
+                    elif rule["type"] == "pair":
+
+                        if offset + 2 * width > min_len:
+                            continue
+
+                        fragments_1 = cls._extract_fragments(X, offset, width)
+                        fragments_2 = cls._extract_fragments(
+                            X, offset + width, width
+                        )
+
+                        if fragments_1 is None or fragments_2 is None:
+                            continue
+
+                        matched = rule["func"](
+                            fragments_1, fragments_2, width, X, offset,
+                            direction_labels=direction_labels,
+                        )
+
+                        if matched:
+                            regions.append({
+                                "name": rule["name"],
+                                "offset": offset,
+                                "width": 2 * width,
+                            })
+                            matched_at_offset = True
+                            break
+
+        return regions
 
     # ------------------------------------------------------------------
     #  Algorithm 1 – FOR-NFOR Boundary Detection
@@ -516,81 +620,47 @@ class SemanticRules:
                 timezone_offset for timestamp rule.
         Output: FOR-NFOR boundary B
         """
-        if not X:
+        regions = cls._scan_semantic_regions(
+            X,
+            capture_start=capture_start,
+            capture_end=capture_end,
+            timezone_offset=timezone_offset,
+            direction_labels=direction_labels,
+        )
+
+        if not regions:
             return 0, set()
 
-        min_len = min(len(m) for m in X)
         hit_offsets: Set[int] = set()
+        for r in regions:
+            hit_offsets.add(r["offset"] + r["width"] - 1)
 
-        # Outer loop: scan every offset — do NOT break early.
-        for offset in range(min_len):
-
-            matched_at_offset = False
-
-            # Inner loop: try every rule. First-match precedence breaks
-            # the rule loop (not just the width loop) after a hit.
-            for rule in cls.RULE_REGISTRY:
-
-                if matched_at_offset:
-                    break
-
-                for width in rule["widths"]:
-
-                    # ---- Single-field rules ----
-                    if rule["type"] == "single":
-
-                        if offset + width > min_len:
-                            continue
-
-                        fragments = cls._extract_fragments(X, offset, width)
-                        if fragments is None:
-                            continue
-
-                        # Timestamp needs capture-window metadata.
-                        if rule["name"] == "timestamp":
-                            matched = cls.is_timestamp(
-                                fragments,
-                                width=width,
-                                capture_start=capture_start,
-                                capture_end=capture_end,
-                                timezone_offset=timezone_offset,
-                            )
-                        else:
-                            matched = rule["func"](fragments, width, X, offset)
-
-                        if matched:
-                            # Paper: hit_offsets ∪= {offset + l_r - 1}
-                            hit_offsets.add(offset + width - 1)
-                            matched_at_offset = True
-                            break  # width loop → next rule
-
-                    # ---- Pair-field rule (Address) ----
-                    elif rule["type"] == "pair":
-
-                        if offset + 2 * width > min_len:
-                            continue
-
-                        fragments_1 = cls._extract_fragments(X, offset, width)
-                        fragments_2 = cls._extract_fragments(X, offset + width, width)
-
-                        if fragments_1 is None or fragments_2 is None:
-                            continue
-
-                        matched = rule["func"](
-                            fragments_1, fragments_2, width, X, offset,
-                            direction_labels=direction_labels
-                        )
-
-                        if matched:
-                            # Pair spans [offset, offset + 2*width - 1]
-                            hit_offsets.add(offset + 2 * width - 1)
-                            matched_at_offset = True
-                            break  # width loop → next rule
-
-        # Boundary theorem: B = max(hit_offsets) + 1, or 0 if no hits.
-        if hit_offsets:
-            boundary_B = max(hit_offsets) + 1
-        else:
-            boundary_B = 0
-
+        boundary_B = max(hit_offsets) + 1
         return boundary_B, hit_offsets
+
+    @classmethod
+    def collect_semantic_regions(
+        cls,
+        X: List[bytes],
+        capture_start: Optional[float] = None,
+        capture_end: Optional[float] = None,
+        timezone_offset: float = 0.0,
+        direction_labels: Optional[List[Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Collect typed semantic regions from boundary scanning.
+
+        Returns a list of dicts: {"name", "offset", "width"}.
+        - Single-field rules have width = rule width (1, 2, 4, 8).
+        - Pair-field rules (address) have width = 2 * rule width.
+
+        These regions are needed by Algorithm 2 (extract_for_candidates)
+        to construct E_sem, F_sparse, and the scanning sequence S.
+        """
+        return cls._scan_semantic_regions(
+            X,
+            capture_start=capture_start,
+            capture_end=capture_end,
+            timezone_offset=timezone_offset,
+            direction_labels=direction_labels,
+        )
