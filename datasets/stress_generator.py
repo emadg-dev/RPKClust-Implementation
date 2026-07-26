@@ -121,4 +121,4 @@ def generate_stress_dataset(
     generator = BinaryProtocolStressGenerator(
         num_messages=num_messages, noise_level=noise_level, seed=seed
     )
-    return generator.generate()
+    return generator.generate_with_metadata()

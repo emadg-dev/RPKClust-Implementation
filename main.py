@@ -4,10 +4,7 @@ import sys
 # Ensure local packages and modules resolve correctly
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from datasets.generate_data import (
-    generate_generic_for_dataset,
-    generate_generic_nfor_dataset,
-)
+from datasets.generate_data import *
 from datasets.stress_generator import BinaryProtocolStressGenerator
 from datasets.dataset_loader import PcapDatasetLoader
 from temp_evaluator import RPKClustEvaluator
@@ -21,22 +18,24 @@ def main():
     evaluator = RPKClustEvaluator(output_dir="results", fig_format="png", dpi=300)
 
     # 1. Generic Fixed-Offset Region (FOR) Dataset
-    X_for, y_for = generate_generic_for_dataset(num_messages=1000, seed=54761161)
+    X_for, y_for, metadata = GenericDatasetGenerator.generate_for_dataset(num_messages=1000, seed=54761161)
     evaluator.run_diagnostics(
         X_for,
         y_for,
+        internal_metadata=metadata,
         dataset_name="Generic FOR",
-        true_boundary=8,
-        true_keyword_offset=2,
+        true_boundary=metadata["true_boundary_B"],
+        true_keyword_offset=metadata["keyword_tag"],
     )
 
     # 2. Generic Non-Fixed-Offset Region (NFOR TLV) Dataset
-    X_nfor, y_nfor = generate_generic_nfor_dataset(num_messages=1000, seed=841561854)
+    X_nfor, y_nfor = GenericDatasetGenerator.generate_nfor_dataset(num_messages=1000, seed=841561854)
     evaluator.run_diagnostics(
         X_nfor,
         y_nfor,
+        internal_metadata=metadata,
         dataset_name="Generic NFOR TLV",
-        true_boundary=0,
+        true_boundary=metadata["true_boundary_B"],
     )
 
     # 3. Binary Stress Test Dataset
@@ -45,8 +44,10 @@ def main():
     evaluator.run_diagnostics(
         X_stress,
         y_stress,
+        internal_metadata=metadata,
         dataset_name="Binary Protocol Stress",
-        true_boundary=4,
+        true_boundary=metadata["true_boundary_B"],
+        true_keyword_offset=metadata["keyword_tag"],
     )
 
     # 4. Real-World PCAP Traffic Dataset (Fetched via PcapDatasetLoader)
