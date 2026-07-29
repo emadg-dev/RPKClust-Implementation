@@ -21,8 +21,12 @@ class BinaryProtocolStressGenerator:
         noise_level: float = 0.2,
         seed: int = 42,
     ):
+        if not isinstance(num_messages, int) or isinstance(num_messages, bool) or num_messages < 0:
+            raise ValueError("num_messages must be a non-negative integer")
+        if not isinstance(noise_level, (int, float)) or not 0.0 <= noise_level <= 1.0:
+            raise ValueError("noise_level must be between 0.0 and 1.0")
         self.num_messages = num_messages
-        self.noise_level = noise_level
+        self.noise_level = float(noise_level)
         self.seed = seed
         self.rng = np.random.default_rng(seed)
 
@@ -43,10 +47,11 @@ class BinaryProtocolStressGenerator:
         """
         X: List[bytes] = []
         y: List[int] = []
+        interaction_metadata: List[Dict[str, Any]] = []
         opcodes = [0x01, 0x02, 0x03, 0x04]
 
         for i in range(self.num_messages):
-            opcode = int(self.rng.choice(opcodes))
+            opcode = int(self.rng.choice(opcodes)) if i % 2 == 0 else y[-1]
             magic = 0xABCD
             version = 1
             sequence = i
@@ -98,6 +103,11 @@ class BinaryProtocolStressGenerator:
             msg = header + payload
             X.append(msg)
             y.append(opcode)
+            interaction_metadata.append({
+                "session_id": i // 2,
+                "direction": "client" if i % 2 == 0 else "server",
+                "timestamp": float(i),
+            })
 
         metadata = {
             "dataset_type": "Binary_Stress",
@@ -105,6 +115,7 @@ class BinaryProtocolStressGenerator:
             "true_keyword_offset": 3,     # Opcode byte location
             "noise_level": self.noise_level,
             "num_clusters": len(opcodes),
+            "interaction_metadata": interaction_metadata,
         }
 
         return X, np.array(y, dtype=int), metadata
@@ -121,4 +132,4 @@ def generate_stress_dataset(
     generator = BinaryProtocolStressGenerator(
         num_messages=num_messages, noise_level=noise_level, seed=seed
     )
-    return generator.generate_with_metadata()
+    return generator.generate()

@@ -1,15 +1,22 @@
 import os
+
 import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.decomposition import PCA
 import numpy as np
-from experiments.parameter_analysis import analyze_offset_shift_impact
 
 from datasets import generate_generic_for_dataset, generate_generic_nfor_dataset
-from rpkclust import RPKClust
-from rpkclust.metrics import convert_bytes_to_feature_matrix
 from experiments.compare_baselines import run_baseline_comparison
-from experiments.parameter_analysis import analyze_sample_size_scalability
+from rpkclust.metrics import convert_bytes_to_feature_matrix
+
+try:  # Support both `python -m experiments.run_rpkclust` and direct execution.
+    from .parameter_analysis import (
+        analyze_offset_shift_impact,
+        analyze_sample_size_scalability,
+    )
+except ImportError:
+    from parameter_analysis import (
+        analyze_offset_shift_impact,
+        analyze_sample_size_scalability,
+    )
 
 def run_all_experiments():
     """Executes the complete experimental suite and exports visual artifacts."""

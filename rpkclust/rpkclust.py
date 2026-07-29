@@ -47,7 +47,7 @@ class RPKClust:
         direction_labels: Optional[List[Any]] = None,
         t_len: int = 1,
         l_len: int = 1,
-        validate_tlv: Optional[Callable] = None,
+        validate_tlv: Optional[Callable[..., bool]] = None,
         stage1_prior: float = 0.1,
         top_k: Optional[int] = None,
     ) -> "RPKClust":
@@ -78,8 +78,23 @@ class RPKClust:
             Paper: "we conduct a new round of inference on the fields ranked
             high in the results of the first stage inference."
         """
-        if X is None or len(X) == 0:
+        if X is None:
+            raise ValueError("X must be a sequence of messages, not None")
+        if not X:
+            self.boundary_B = 0
+            self.semantic_regions = []
+            self.candidates = []
+            self.best_candidate = None
+            self.labels_ = np.array([], dtype=int)
             return self
+        if not 0.0 < float(stage1_prior) < 1.0:
+            raise ValueError("stage1_prior must be a finite probability strictly between 0 and 1")
+        if top_k is not None and (not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0):
+            raise ValueError("top_k must be a positive integer or None")
+        if interaction_metadata is not None and len(interaction_metadata) != len(X):
+            raise ValueError("interaction_metadata must contain one entry per message")
+        if direction_labels is not None and len(direction_labels) != len(X):
+            raise ValueError("direction_labels must contain one entry per message")
 
         # ---- Step 1: Boundary Identification + Semantic Region Collection
         print("Identifying Boundaries...")
@@ -191,4 +206,6 @@ class RPKClust:
     def fit_predict(self, X: List[bytes], **fit_kwargs) -> np.ndarray:
         """Fit and return cluster labels. Accepts same kwargs as fit()."""
         self.fit(X, **fit_kwargs)
+        if self.labels_ is None:
+            raise RuntimeError("fit completed without producing cluster labels")
         return self.labels_

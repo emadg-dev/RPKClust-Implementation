@@ -65,6 +65,10 @@ def clustering_accuracy(labels_true: np.ndarray, labels_pred: np.ndarray) -> flo
     labels_true = np.asarray(labels_true)
     labels_pred = np.asarray(labels_pred)
 
+    if labels_true.ndim != 1 or labels_pred.ndim != 1:
+        raise ValueError("labels_true and labels_pred must be one-dimensional")
+    if len(labels_true) != len(labels_pred):
+        raise ValueError("labels_true and labels_pred must have the same length")
     if len(labels_true) == 0:
         return 0.0
 
@@ -169,6 +173,14 @@ def evaluate_clustering(
     """
     labels_true = np.asarray(labels_true)
     labels_pred = np.asarray(labels_pred)
+    if labels_true.ndim != 1 or labels_pred.ndim != 1:
+        raise ValueError("labels_true and labels_pred must be one-dimensional")
+    if len(labels_true) != len(labels_pred):
+        raise ValueError("labels_true and labels_pred must have the same length")
+    if len(labels_true) == 0:
+        raise ValueError("at least one label is required for clustering evaluation")
+    if feature_matrix is not None and np.asarray(feature_matrix).shape[0] != len(labels_true):
+        raise ValueError("feature_matrix must contain one row per label")
 
     if memory_mb is None:
         memory_mb = measure_memory_usage()
@@ -234,7 +246,7 @@ def evaluate_clustering(
                 ),
                 4,
             )
-        except Exception:
+        except ValueError:
             metrics["Silhouette"] = np.nan
             metrics["Davies-Bouldin"] = np.nan
     else:

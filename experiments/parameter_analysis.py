@@ -1,4 +1,6 @@
+import os
 import time
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from rpkclust import RPKClust
@@ -30,7 +32,9 @@ def analyze_sample_size_scalability(sample_sizes=[100, 250, 500, 1000, 2000]):
         
     return pd.DataFrame(records)
 
-def analyze_offset_shift_impact(max_pad_lengths=[0, 5, 10, 20, 50, 100]):
+def analyze_offset_shift_impact(
+    max_pad_lengths=[0, 5, 10, 20, 50, 100], output_dir="results/figures"
+):
     """
     Demonstrates the exact problem RPKClust solves: Traditional algorithms fail 
     when the keyword offset shifts.
@@ -39,17 +43,14 @@ def analyze_offset_shift_impact(max_pad_lengths=[0, 5, 10, 20, 50, 100]):
     records = []
     
     for pad in max_pad_lengths:
-        # Generate data with increasing NFOR padding variance
-        # We temporarily patch generate_generic_nfor_dataset to accept max_pad_len in this loop
-        import numpy as np
-        np.random.seed(42)
-        m, l_true = generate_generic_nfor_dataset(num_messages=400) 
-        
-        # Manually introduce extreme padding variance for this test
+        # Insert padding after the 7-byte fixed header, so every command TLV
+        # is shifted by the recorded amount regardless of TLV ordering.
+        rng = np.random.default_rng(42)
+        m, l_true = generate_generic_nfor_dataset(num_messages=400)
         m_shifted = []
         for msg in m:
-            pad_len = np.random.randint(0, pad + 1) if pad > 0 else 0
-            m_shifted.append(msg[:20] + np.random.bytes(pad_len) + msg[20:])
+            pad_len = int(rng.integers(0, pad + 1)) if pad > 0 else 0
+            m_shifted.append(msg[:7] + rng.bytes(pad_len) + msg[7:])
             
         # 1. RPKClust
         rpk = RPKClust()
@@ -58,7 +59,7 @@ def analyze_offset_shift_impact(max_pad_lengths=[0, 5, 10, 20, 50, 100]):
         
         # 2. K-Means
         X_mat = convert_bytes_to_feature_matrix(m_shifted)
-        km = KMeans(n_clusters=4, random_state=42, n_init=10)
+        km = KMeans(n_clusters=len(np.unique(l_true)), random_state=42, n_init=10)
         l_km = km.fit_predict(X_mat)
         ari_km = adjusted_rand_score(l_true, l_km)
         
@@ -80,7 +81,8 @@ def analyze_offset_shift_impact(max_pad_lengths=[0, 5, 10, 20, 50, 100]):
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig("results/figures/offset_shift_impact.png", dpi=300)
+    os.makedirs(output_dir, exist_ok=True)
+    plt.savefig(os.path.join(output_dir, "offset_shift_impact.png"), dpi=300)
     plt.close()
     
     return df_impact

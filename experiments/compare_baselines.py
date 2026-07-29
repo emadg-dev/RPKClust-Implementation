@@ -12,8 +12,14 @@ def run_baseline_comparison(messages, labels_true):
     Runs RPKClust and standard baseline models on the exact same dataset,
     returning a performance table.
     """
+    if len(messages) != len(labels_true):
+        raise ValueError("messages and labels_true must have the same length")
+    if len(messages) < 2:
+        raise ValueError("at least two messages are required for baseline comparison")
     X_mat = convert_bytes_to_feature_matrix(messages)
     n_clusters = len(set(labels_true))
+    if n_clusters < 2 or n_clusters > len(messages):
+        raise ValueError("labels_true must contain between 2 and len(messages) clusters")
     
     results = []
     
@@ -55,7 +61,12 @@ def run_baseline_comparison(messages, labels_true):
     
     # 5. Spectral Clustering
     t0 = time.time()
-    spec = SpectralClustering(n_clusters=n_clusters, random_state=42, assign_labels='kmeans')
+    spec = SpectralClustering(
+        n_clusters=n_clusters,
+        n_neighbors=min(10, len(messages) - 1),
+        random_state=42,
+        assign_labels="kmeans",
+    )
     spec_labels = spec.fit_predict(X_mat)
     t_spec = time.time() - t0
     spec_res = evaluate_clustering(labels_true, spec_labels, X_mat, t_spec)

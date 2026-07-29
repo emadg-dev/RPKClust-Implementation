@@ -8,6 +8,7 @@ Generates paper-accurate evaluation results:
 """
 
 import os
+import re
 import time
 import numpy as np
 import pandas as pd
@@ -23,6 +24,20 @@ from rpkclust.metrics import (
     convert_bytes_to_feature_matrix,
     measure_memory_usage,
 )
+
+
+def _to_markdown(frame: pd.DataFrame) -> str:
+    """Render a table without requiring pandas' optional tabulate package."""
+    try:
+        return frame.to_markdown(index=False)
+    except ImportError:
+        headers = [str(column) for column in frame.columns]
+        rows = [[str(value) for value in row] for row in frame.itertuples(index=False, name=None)]
+        widths = [max(len(header), *(len(row[i]) for row in rows)) for i, header in enumerate(headers)]
+        header_row = "| " + " | ".join(header.ljust(widths[i]) for i, header in enumerate(headers)) + " |"
+        separator = "|" + "|".join("-" * (width + 2) for width in widths) + "|"
+        body = ["| " + " | ".join(value.ljust(widths[i]) for i, value in enumerate(row)) + " |" for row in rows]
+        return "\n".join([header_row, separator, *body])
 
 
 class RPKClustEvaluator:
@@ -76,6 +91,10 @@ class RPKClustEvaluator:
         and saves dataset-level tables and figures.
         """
         fit_kwargs = fit_kwargs or {}
+        if len(X) != len(y_true):
+            raise ValueError("X and y_true must contain the same number of messages")
+        if not X:
+            raise ValueError("at least one message is required for diagnostics")
 
         print("\n" + "=" * 65)
         print(f"  RPKCLUST PAPER DIAGNOSTIC REPORT: {dataset_name}")
@@ -192,7 +211,7 @@ class RPKClustEvaluator:
         self.summary_records.append(summary_record)
 
         # Export dataset-specific plots and candidate ranking table
-        clean_ds_name = dataset_name.lower().replace(" ", "_").replace("(", "").replace(")", "")
+        clean_ds_name = re.sub(r"[^a-z0-9_-]+", "_", dataset_name.lower()).strip("_-") or "dataset"
         self._export_candidate_table(model.candidates, clean_ds_name)
         self._generate_candidate_probability_figure(model.candidates, dataset_name, clean_ds_name)
 
@@ -228,7 +247,7 @@ class RPKClustEvaluator:
 
         with open(md_path, "w", encoding="utf-8") as f:
             f.write("# RPKClust Paper Evaluation Summary Table\n\n")
-            f.write(df_paper.to_markdown(index=False))
+            f.write(_to_markdown(df_paper))
             f.write("\n")
 
         print(f"[Artifact Export] Aggregated summary table written to:\n  - {md_path}\n  - {csv_path}")
@@ -257,7 +276,7 @@ class RPKClustEvaluator:
         md_path = os.path.join(self.tables_dir, f"candidates_{dataset_key}.md")
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(f"# Top Candidate Keyword Rankings: {dataset_key}\n\n")
-            f.write(df_cands.to_markdown(index=False))
+            f.write(_to_markdown(df_cands))
             f.write("\n")
 
     def _generate_candidate_probability_figure(

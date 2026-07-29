@@ -68,6 +68,11 @@ def extract_for_candidates(
 
     if X is None or len(X) == 0 or boundary_B <= 0:
         return candidates
+    if not candidate_lengths or any(
+        not isinstance(length, int) or isinstance(length, bool) or length <= 0
+        for length in candidate_lengths
+    ):
+        raise ValueError("candidate_lengths must contain positive integers")
 
     min_len = min(len(msg) for msg in X)
     max_offset = min(boundary_B, min_len)
@@ -342,7 +347,10 @@ def extract_nfor_tlv_patterns(
     if X is None or len(X) == 0:
         return P, B
 
-    if t_len <= 0 or l_len <= 0:
+    if (
+        not isinstance(t_len, int) or isinstance(t_len, bool) or t_len <= 0
+        or not isinstance(l_len, int) or isinstance(l_len, bool) or l_len <= 0
+    ):
         raise ValueError("t_len and l_len must be positive integers")
 
     if boundary_B < 0:

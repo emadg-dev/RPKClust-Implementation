@@ -22,10 +22,8 @@ probability, that is, P(K=1) = p_f and P(K=0) = 1 - p_f."
 
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
-try:
-    from .constraints import ClusteringConstraints
-except ImportError:
-    from constraints import ClusteringConstraints
+
+from .constraints import ClusteringConstraints
 
 
 # ------------------------------------------------------------------
@@ -109,7 +107,15 @@ class RPKClustOptimizer:
         constraint_values : dict
             Individual constraint scores for debugging/ranking.
         """
-        values = candidate["values"]
+        if X is None:
+            raise ValueError("X must be a sequence of messages, not None")
+        values = candidate.get("values")
+        if values is None or len(values) != len(X):
+            raise ValueError("candidate values must contain one entry per message")
+        if interaction_metadata is not None and len(interaction_metadata) != len(X):
+            raise ValueError("interaction_metadata must contain one entry per message")
+        if not np.isfinite(prior) or not 0.0 < prior < 1.0:
+            raise ValueError("prior must be a finite probability strictly between 0 and 1")
         labels = self.cluster_by_candidate(values)
 
         c1 = ClusteringConstraints.message_similarity(labels, X)
@@ -212,6 +218,8 @@ class RPKClustOptimizer:
         Paper: "We calculate the posterior probability of each field being
         a keyword field."
         """
+        if not np.isfinite(prior) or not 0.0 < prior < 1.0:
+            raise ValueError("prior must be a finite probability strictly between 0 and 1")
         constraints = np.array([c1, c2, c3, c4], dtype=float)
         constraints = np.clip(constraints, 1e-6, 1 - 1e-6)
 
@@ -337,9 +345,10 @@ class RPKClustOptimizer:
         if candidate_type == "FOR":
             # Paper Eq. (11): max(0.95 - 0.01 * cand_offset, 0.7)
             return max(0.95 - 0.01 * offset, 0.7)
-        else:
+        if candidate_type == "NFOR":
             # Paper Eq. (11): 0.60 for NFOR
             return 0.60
+        raise ValueError("candidate_type must be 'FOR' or 'NFOR'")
 
     def bayesian_update(self, p_bit: float, p_offset: float, p_f: float) -> float:
         """
@@ -406,6 +415,9 @@ class RPKClustOptimizer:
         all_scored : list of (candidate, probability)
             All candidates scored in Stage 2, sorted by probability.
         """
+        if top_k is not None and (not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0):
+            raise ValueError("top_k must be a positive integer or None")
+
         # --- Stage 1: ranking ---
         stage1_ranked = self.rank_stage1_candidates(
             candidates, X,

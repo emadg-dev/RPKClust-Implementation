@@ -37,22 +37,27 @@ class GenericDatasetGenerator:
             y (np.ndarray): Target cluster labels (derived from OpCode).
             metadata (Dict[str, Any]): Ground-truth parameters for evaluation.
         """
-        np.random.seed(self.seed)
+        if not isinstance(num_messages, int) or isinstance(num_messages, bool) or num_messages < 0:
+            raise ValueError("num_messages must be a non-negative integer")
+        rng = np.random.default_rng(self.seed)
         X: List[bytes] = []
         y: List[int] = []
+        interaction_metadata: List[Dict[str, Any]] = []
 
         opcodes = [0x01, 0x02, 0x03, 0x04]
 
         for i in range(num_messages):
             magic = 0xABCD
             version = 1
-            opcode = int(np.random.choice(opcodes))
+            # Adjacent messages model a request/response transaction and
+            # intentionally share an opcode for remote-coupling evaluation.
+            opcode = int(rng.choice(opcodes)) if i % 2 == 0 else y[-1]
             timestamp = 10000 + i
             sequence = i
             
             # Variable length tail payload
-            payload_len = int(np.random.randint(4, 17))
-            payload = np.random.bytes(payload_len)
+            payload_len = int(rng.integers(4, 17))
+            payload = rng.bytes(payload_len)
 
             # Pack fixed header (12 bytes total)
             fixed_header = struct.pack(">HBBII", magic, version, opcode, timestamp, sequence)
@@ -60,6 +65,11 @@ class GenericDatasetGenerator:
 
             X.append(msg)
             y.append(opcode)
+            interaction_metadata.append({
+                "session_id": i // 2,
+                "direction": "client" if i % 2 == 0 else "server",
+                "timestamp": float(i),
+            })
 
         metadata = {
             "dataset_type": "FOR",
@@ -67,6 +77,7 @@ class GenericDatasetGenerator:
             "true_keyword_offset": 3,     # OpCode byte index
             "true_keyword_width": 1,
             "num_clusters": len(opcodes),
+            "interaction_metadata": interaction_metadata,
         }
 
         return X, np.array(y, dtype=int), metadata
@@ -92,14 +103,18 @@ class GenericDatasetGenerator:
             y (np.ndarray): Target cluster labels (derived from Command TLV value).
             metadata (Dict[str, Any]): Ground-truth parameters for evaluation.
         """
-        np.random.seed(self.seed)
+        if not isinstance(num_messages, int) or isinstance(num_messages, bool) or num_messages < 0:
+            raise ValueError("num_messages must be a non-negative integer")
+        rng = np.random.default_rng(self.seed)
         X: List[bytes] = []
         y: List[int] = []
+        interaction_metadata: List[Dict[str, Any]] = []
 
         cmd_values = [0x10, 0x20, 0x30, 0x40]
 
         for i in range(num_messages):
-            cmd_val = int(np.random.choice(cmd_values))
+            # Adjacent messages model a request/response transaction.
+            cmd_val = int(rng.choice(cmd_values)) if i % 2 == 0 else y[-1]
 
             # Fixed Header (7 Bytes)
             magic = 0xABCD
@@ -111,32 +126,38 @@ class GenericDatasetGenerator:
             tlv_cmd = struct.pack(">BBB", 0x0A, 1, cmd_val)
 
             # Required Data TLV (2 + data_len Bytes)
-            data_len = int(np.random.randint(2, 9))
-            data = np.random.bytes(data_len)
+            data_len = int(rng.integers(2, 9))
+            data = rng.bytes(data_len)
             tlv_data = struct.pack(">BB", 0x0B, data_len) + data
 
             tlvs = [tlv_cmd, tlv_data]
 
             # Optional TLV (30% probability)
-            if np.random.rand() < 0.30:
-                opt_len = int(np.random.randint(1, 5))
-                opt_data = np.random.bytes(opt_len)
+            if rng.random() < 0.30:
+                opt_len = int(rng.integers(1, 5))
+                opt_data = rng.bytes(opt_len)
                 tlv_optional = struct.pack(">BB", 0x0C, opt_len) + opt_data
                 tlvs.append(tlv_optional)
 
             # Shuffle TLV sequence in the NFOR body to induce position variance
-            np.random.shuffle(tlvs)
+            rng.shuffle(tlvs)
 
             msg = header + b"".join(tlvs)
 
             X.append(msg)
             y.append(cmd_val)
+            interaction_metadata.append({
+                "session_id": i // 2,
+                "direction": "client" if i % 2 == 0 else "server",
+                "timestamp": float(i),
+            })
 
         metadata = {
             "dataset_type": "NFOR",
             "true_boundary_B": 7,
             "keyword_tag": "TLV_Type_10",
             "num_clusters": len(cmd_values),
+            "interaction_metadata": interaction_metadata,
         }
 
         return X, np.array(y, dtype=int), metadata

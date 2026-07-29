@@ -72,6 +72,8 @@ class ClusteringConstraints:
         the two distributions.
         """
         n = len(labels)
+        if len(X) != n:
+            raise ValueError("labels and X must contain the same number of messages")
         if n < 2:
             return 0.0
 
@@ -141,6 +143,8 @@ class ClusteringConstraints:
         this constraint cannot be computed. A neutral score (0.5) is
         returned with a warning.
         """
+        if len(X) != len(labels):
+            raise ValueError("labels and X must contain the same number of messages")
         if interaction_metadata is None:
             warnings.warn(
                 "Remote coupling constraint requires interaction_metadata "
@@ -152,6 +156,8 @@ class ClusteringConstraints:
             return 0.5
 
         n = len(labels)
+        if len(interaction_metadata) != n:
+            raise ValueError("interaction_metadata must contain one entry per message")
         if n < 2:
             return 0.0
 
@@ -213,32 +219,26 @@ class ClusteringConstraints:
                     key=lambda i: timestamps[i],
                 )
 
-                # Pair each client message with nearest server message.
+                # Pair each request with the nearest unused subsequent response.
+                available_servers = list(s_msgs)
                 for ci in c_msgs:
-                    best_si = None
-                    best_dt = float("inf")
-                    for si in s_msgs:
-                        dt = timestamps[si] - timestamps[ci]
-                        if dt >= 0 and dt < best_dt:
-                            best_dt = dt
-                            best_si = si
-                    if best_si is not None:
+                    matching = [si for si in available_servers if timestamps[si] >= timestamps[ci]]
+                    if matching:
+                        best_si = min(matching, key=lambda si: timestamps[si] - timestamps[ci])
                         pairs.append((ci, best_si))
+                        available_servers.remove(best_si)
         else:
             # No session info — pair by timestamp proximity globally.
             sorted_clients = sorted(client_indices, key=lambda i: timestamps[i])
             sorted_servers = sorted(server_indices, key=lambda i: timestamps[i])
 
+            available_servers = list(sorted_servers)
             for ci in sorted_clients:
-                best_si = None
-                best_dt = float("inf")
-                for si in sorted_servers:
-                    dt = timestamps[si] - timestamps[ci]
-                    if dt >= 0 and dt < best_dt:
-                        best_dt = dt
-                        best_si = si
-                if best_si is not None:
+                matching = [si for si in available_servers if timestamps[si] >= timestamps[ci]]
+                if matching:
+                    best_si = min(matching, key=lambda si: timestamps[si] - timestamps[ci])
                     pairs.append((ci, best_si))
+                    available_servers.remove(best_si)
 
         if not pairs:
             return 0.5
@@ -302,6 +302,10 @@ class ClusteringConstraints:
         """
         values = candidate["values"]
         cand_type = candidate.get("type", "FOR")
+        if len(labels) != len(values):
+            raise ValueError("labels and candidate values must contain the same number of messages")
+        if X is not None and len(X) != len(values):
+            raise ValueError("X and candidate values must contain the same number of messages")
 
         n_total = len(values)
         if n_total == 0:

@@ -80,6 +80,7 @@ class AMQPExtractor:
         self.frames = []
 
         self.metadata = []
+        self._extracted = False
 
 
     # -----------------------------------------------------
@@ -164,9 +165,8 @@ class AMQPExtractor:
         while offset + 7 < len(stream):
 
 
-            # Skip AMQP protocol header
-            if stream[offset:offset+4] == self.AMQP_HEADER:
-
+            # Skip the eight-byte AMQP protocol header only when requested.
+            if self.remove_handshake and stream[offset:offset+4] == self.AMQP_HEADER:
                 offset += 8
                 continue
 
@@ -258,6 +258,10 @@ class AMQPExtractor:
 
     def extract(self):
 
+        # Extraction is repeatable: metadata must describe only this run.
+        self.frames = []
+        self.metadata = []
+        self._extracted = False
         self._extract_tcp_streams()
 
 
@@ -278,6 +282,7 @@ class AMQPExtractor:
 
 
         self.frames = all_frames
+        self._extracted = True
 
 
         return self.frames
@@ -293,7 +298,7 @@ class AMQPExtractor:
 
         """
 
-        if not self.frames:
+        if not self._extracted:
 
             self.extract()
 
@@ -308,7 +313,7 @@ class AMQPExtractor:
 
     def summary(self):
 
-        if not self.frames:
+        if not self._extracted:
 
             self.extract()
 

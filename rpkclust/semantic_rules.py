@@ -100,7 +100,7 @@ class SemanticRules:
         Zero Shannon entropy is equivalent to all values being identical.
         Input: byte slices of any length.
         """
-        if not fragments:
+        if len(fragments) < 2:
             return False
 
         first = fragments[0]
