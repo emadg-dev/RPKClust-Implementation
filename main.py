@@ -16,7 +16,7 @@ def main():
     print("==========================================================\n")
 
     evaluator = RPKClustEvaluator(output_dir="results", fig_format="png", dpi=300)
-    generator = GenericDatasetGenerator(seed=3456732456)
+    generator = GenericDatasetGenerator(seed=897845900173)
     # 1. Generic Fixed-Offset Region (FOR) Dataset
     X_for, y_for, metadata = generator.generate_for_dataset(num_messages=1000)
     evaluator.run_diagnostics(
@@ -39,7 +39,7 @@ def main():
     )
 
     # 3. Binary Stress Test Dataset
-    stress_gen = BinaryProtocolStressGenerator(num_messages=1000, noise_level=0.15, seed=4151684516)
+    stress_gen = BinaryProtocolStressGenerator(num_messages=1000, noise_level=0.15, seed=456782546)
     X_stress, y_stress, stress_metadata = stress_gen.generate_with_metadata()
     evaluator.run_diagnostics(
         X_stress,

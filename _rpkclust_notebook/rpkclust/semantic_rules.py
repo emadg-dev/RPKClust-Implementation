@@ -216,11 +216,9 @@ class SemanticRules:
         unique_count = len(unique_vals)
         max_possible = min(len(nums), 2 ** (8 * width))
         ratio = unique_count / float(max_possible)
+        threshold = 0.01 if width == 1 else 0.02
 
-        # threshold = 0.01 if width == 1 else 0.02
-        # return ratio <= threshold
-
-        return ratio <= 0.02
+        return ratio <= threshold
 
     # ------------------------------------------------------------------
     #  Rule 5 – Address (paired fields)
@@ -511,10 +509,10 @@ class SemanticRules:
         for msg in X:
             if offset + t_len + l_len > len(msg):
                 continue
-            
+
             len_bytes = msg[offset + t_len : offset + t_len + l_len]
             len_val = int.from_bytes(len_bytes, "big")
-            
+
             # Check if length field produces a valid payload slice within message bounds
             if 0 < len_val <= (len(msg) - (offset + t_len + l_len)):
                 valid_tlv_count += 1
@@ -602,10 +600,10 @@ class SemanticRules:
                                 "width": width,
                             })
                             matched_at_offset = True
-                            
+
                             if (offset + width) > current_max_boundary:
                                 current_max_boundary = offset + width
-                            
+
                             break
 
                     # ---- Pair-field rule (Address) ----

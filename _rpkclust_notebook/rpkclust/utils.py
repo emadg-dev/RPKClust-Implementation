@@ -256,7 +256,7 @@ def _default_validate_tlv(
     # Verify exact length match
     if len(value_bytes) != len_val:
         return False
-        
+
     # Prevent absurdly large length values from false-positive type/length bytes
     if len_val > len(m) - (offset + t_len + l_len):
         return False

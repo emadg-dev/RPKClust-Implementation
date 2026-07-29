@@ -315,7 +315,7 @@ class RPKClustOptimizer:
 
         p_bit = 1.0 - euclidean_dist / d_max
         return float(np.clip(p_bit, 1e-6, 1.0 - 1e-6))
-        
+
     def compute_p_offset(
         self,
         candidate_type: str,
