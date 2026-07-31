@@ -38,32 +38,7 @@ def extract_for_candidates(
     semantic_regions: Optional[List[SemanticRegion]] = None,
     candidate_lengths: Tuple[int, ...] = (1, 2, 4),
 ) -> List[FORCandidate]:
-    """
-    Algorithm 2: Keyword Candidate Generation in FOR.
 
-    Parameters
-    ----------
-    X : List[bytes]
-        Message set M (raw bytes).
-    boundary_B : int
-        FOR-NFOR boundary from Algorithm 1.
-    semantic_regions : Optional[List[SemanticRegion]]
-        Typed semantic hits from boundary identification, e.g.:
-        {"name": "constant", "offset": 0, "width": 2}
-        {"name": "sparse",   "offset": 8, "width": 1}
-        Algorithm 2 requires E_sem — if None, a warning is emitted and
-        all FOR offsets become candidates (NOT paper-accurate).
-    candidate_lengths : Tuple[int, ...]
-        Variable sliding window widths L to try (paper: "variable sliding
-        window").  Default (1, 2, 4) covers common protocol field sizes.
-
-    Returns
-    -------
-    List[FORCandidate]
-        Each candidate dict: {"offset", "width", "values"}.
-        Only offsets that pass semantic filtering, modulo alignment, and
-        continuity checks are returned.
-    """
     candidates: List[FORCandidate] = []
 
     if X is None or len(X) == 0 or boundary_B <= 0:
@@ -82,6 +57,7 @@ def extract_for_candidates(
     # ----------------------------------------------------------
 
     FOR = set(range(max_offset))                       # [0, |F_FOR| - 1]
+    # print("FOR =", FOR)
 
     if semantic_regions is None:
         import warnings
@@ -118,6 +94,8 @@ def extract_for_candidates(
     sparse_starts: Set[int] = set()
 
     for region in excluded_regions:
+        # print(region)
+        # print(_region_offsets(region))
         all_semantic_offsets |= _region_offsets(region) & FOR
 
     for region in sparse_regions:
@@ -130,6 +108,7 @@ def extract_for_candidates(
     # sparse-covered offsets are removed from E, even if semantic
     # detections overlap.
     E = all_semantic_offsets - sparse_offsets
+    # print("E =", E)
 
     # F_sparse = starting offsets of sparse fields (bounded to FOR).
     F_sparse: Set[int] = sparse_starts & FOR
@@ -137,11 +116,13 @@ def extract_for_candidates(
     # Line 2: U ← [0, |F_FOR| − 1] \ E
     #   Undetected offsets = FOR offsets not covered by excluded regions.
     U: Set[int] = FOR - E
+    # print("U =", U)
 
     # Line 3: S ← U ∪ F_sparse
     #   Scanning sequence = undetected offsets + sparse field starts,
     #   bounded to the FOR.
     S: Set[int] = (U | F_sparse) & FOR
+    # print("S =", S)
 
     # ----------------------------------------------------------
     # Lines 4–11: Candidate generation

@@ -94,25 +94,23 @@ class SemanticRules:
     # ------------------------------------------------------------------
 
     @classmethod
-    def is_constant(cls, fragments: List[Any], width: int = 1) -> bool:
-        """
-        Paper Eq. (1): H(s) = 0 AND for all i, j: s_i ≡ s_j.
-        Zero Shannon entropy is equivalent to all values being identical.
-        Input: byte slices of any length.
-        """
-        if len(fragments) < 2:
+    def is_constant(cls, fragments, width=1):
+        if len(fragments) < 4:
             return False
 
         first = fragments[0]
-        if first is None:
+
+        if any(f != first for f in fragments):
             return False
 
-        if isinstance(first, (bytes, bytearray)) and len(first) != width:
-            return False
-
-        for f in fragments[1:]:
-            if f is None or f != first:
+        # don't classify all-zero or all-FF padding
+        if isinstance(first, (bytes, bytearray)):
+            if all(b == 0x00 for b in first):
                 return False
+
+            if all(b == 0xFF for b in first):
+                return False
+
         return True
 
     # ------------------------------------------------------------------
@@ -193,32 +191,28 @@ class SemanticRules:
     # ------------------------------------------------------------------
 
     @classmethod
-    def is_sparse(cls, fragments: List[Any], width: int = 1) -> bool:
-        """
-        Paper Eq. (4):
-            |V_unique| / 2^(8k) <= 0.02   AND   0 not in V_unique
-            k in {1, 2}
-        Identifies underutilized non-zero fields (e.g., protocol flags).
-        """
+    def is_sparse(cls, fragments, width=1):
+
         if width not in (1, 2):
             return False
 
         nums = cls._to_int_list(fragments, width)
-        if nums is None or not nums:
+
+        if not nums:
             return False
 
         unique_vals = set(nums)
 
-        # 0 must not appear in the unique value set.
         if 0 in unique_vals:
             return False
 
         unique_count = len(unique_vals)
-        max_possible = min(len(nums), 2 ** (8 * width))
-        ratio = unique_count / float(max_possible)
 
-        # threshold = 0.01 if width == 1 else 0.02
-        # return ratio <= threshold
+        # constant fields are not sparse
+        if unique_count <= 1:
+            return False
+
+        ratio = unique_count / float(2 ** (8 * width))
 
         return ratio <= 0.02
 
@@ -555,15 +549,20 @@ class SemanticRules:
 
         for offset in range(min_len):
 
+            # print(f"\n----- OFFSET {offset} -----")
+            # print(f"Current Boundary = {current_max_boundary}")
+
             # ENFORCE CONTINUITY: Stop if offset jumps past known boundary
-            if offset > current_max_boundary + allowed_gap:
-                break
+            # if offset > current_max_boundary + allowed_gap:
+            #     print(f"STOP: Continuity Rule at offset={offset}")
+            #     break
 
             # NFOR TLV START GUARD:
             # If a valid TLV pattern starts at this offset across messages,
             # we have reached the NFOR region. Stop FOR scanning immediately!
-            if offset >= 2 and cls._is_tlv_start(X, offset, t_len=1, l_len=1):
-                break
+            # if offset >= 2 and cls._is_tlv_start(X, offset, t_len=1, l_len=1):
+            #     print(f"STOP: TLV detected at offset={offset}")
+            #     break
 
             matched_at_offset = False
 
@@ -596,16 +595,23 @@ class SemanticRules:
                             matched = rule["func"](fragments, width, X, offset)
 
                         if matched:
+
+                            # print(
+                            #     f"MATCH -> "
+                            #     f"{rule['name']} "
+                            #     f"offset={offset} "
+                            #     f"width={width}"
+                            # )
                             regions.append({
                                 "name": rule["name"],
                                 "offset": offset,
                                 "width": width,
                             })
                             matched_at_offset = True
-                            
+
                             if (offset + width) > current_max_boundary:
                                 current_max_boundary = offset + width
-                            
+
                             break
 
                     # ---- Pair-field rule (Address) ----
@@ -639,9 +645,10 @@ class SemanticRules:
                                 current_max_boundary = offset + 2 * width
 
                             break
-
+        # print("\nSemantic Regions:")
+        # for r in regions:
+        #     print(r)
         return regions
-
     # ------------------------------------------------------------------
     #  Algorithm 1 – FOR-NFOR Boundary Detection
     # ------------------------------------------------------------------

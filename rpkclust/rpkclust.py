@@ -51,33 +51,7 @@ class RPKClust:
         stage1_prior: float = 0.1,
         top_k: Optional[int] = None,
     ) -> "RPKClust":
-        """
-        Executes the full RPKClust pipeline on binary message trace X.
-
-        Parameters
-        ----------
-        X : List[bytes]
-            Application-layer binary messages.
-        interaction_metadata : optional
-            Per-message metadata (source/dest IP, ports, timestamps) for
-            the remote coupling constraint in Stage 1.
-        capture_start, capture_end : optional float
-            Capture time window for timestamp rule in boundary detection.
-        timezone_offset : float
-            Timezone offset in seconds for timestamp rule.
-        direction_labels : optional
-            Per-message direction labels for address rule.
-        t_len, l_len : int
-            TLV type and length field widths for NFOR candidate generation.
-        validate_tlv : optional callable
-            Semantic TLV validator for NFOR candidate generation.
-        stage1_prior : float
-            Prior probability for Stage 1 naive Bayes.
-        top_k : optional int
-            If set, only the top-k Stage 1 candidates proceed to Stage 2.
-            Paper: "we conduct a new round of inference on the fields ranked
-            high in the results of the first stage inference."
-        """
+      
         if X is None:
             raise ValueError("X must be a sequence of messages, not None")
         if not X:

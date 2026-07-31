@@ -59,6 +59,32 @@ def main():
             pcap_file=pcap_file,
         )
 
+    X_ethernetip, y_ethernetip, ethernetip_metadata = pcap_loader.extract_folder_dataset(
+        "datasets/EthernetIP"
+    )
+
+    evaluator.run_diagnostics(
+        X_ethernetip,
+        y_ethernetip,
+        dataset_name="EthernetIP",
+        fit_kwargs={
+            "interaction_metadata": ethernetip_metadata
+        },
+    )
+
+    X_dnp3, y_dnp3, dnp3_metadata = pcap_loader.extract_folder_dataset(
+        "datasets/dnp3"
+    )
+
+    evaluator.run_diagnostics(
+        X_dnp3,
+        y_dnp3,
+        dataset_name="DNP3",
+        fit_kwargs={
+            "interaction_metadata": dnp3_metadata
+        },
+    )
+
     evaluator.export_summary_artifacts()
 
 

@@ -3,10 +3,12 @@ Dataset loader for fetching and parsing real-world network packet captures (.pca
 """
 
 import os
+from pathlib import Path
 import urllib.request
 import struct
 from typing import Any, Dict, List, Tuple, Optional
 import numpy as np
+from sklearn.preprocessing import LabelEncoder
 
 
 class PcapDatasetLoader:
@@ -125,6 +127,61 @@ class PcapDatasetLoader:
         """Extract payloads and their interaction metadata in one call."""
         payloads, labels = self.extract_payloads(pcap_path, min_length)
         return payloads, labels, self.last_metadata.copy()
+
+
+    def extract_folder_dataset(self, folder_path: str):
+        """
+        Loads every PCAP inside a folder.
+
+        Each PCAP file represents one class.
+
+        Returns
+        -------
+        X : list[bytes]
+        y : np.ndarray
+        metadata : list[dict]
+        """
+
+        folder = Path(folder_path)
+
+        if not folder.exists():
+            raise FileNotFoundError(folder)
+
+        pcap_files = sorted(folder.glob("*.pcap"))
+
+        if not pcap_files:
+            raise RuntimeError(f"No PCAP files found in {folder}")
+
+        X = []
+        y = []
+        metadata = []
+
+        for pcap in pcap_files:
+
+            class_name = pcap.stem
+
+            print(f"Loading {class_name}")
+
+            X_part, _, meta_part = self.extract_payloads_with_metadata(
+                str(pcap)
+            )
+
+            X.extend(X_part)
+
+            y.extend([class_name] * len(X_part))
+
+            if meta_part:
+                metadata.extend(meta_part)
+
+        encoder = LabelEncoder()
+        y = encoder.fit_transform(y)
+
+        print("\nClasses:")
+
+        for i, c in enumerate(encoder.classes_):
+            print(f"{i} -> {c}")
+
+        return X, y, metadata
 
     @staticmethod
     def _extract_transport_payload(packet: bytes) -> Optional[bytes]:
