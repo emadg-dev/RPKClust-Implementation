@@ -1,11 +1,3 @@
-"""
-RPKClust Paper-Accurate Evaluator and Artifact Generator (Section 4).
-
-Generates paper-accurate evaluation results:
-  - Terminal diagnostic output (FOR-NFOR error, Stage 1/2 probabilities, paper metrics).
-  - Markdown / LaTeX-formatted tables saved to results/tables/.
-  - Publication-ready visual diagnostic figures saved to results/figures/.
-"""
 
 import os
 import re
@@ -27,7 +19,6 @@ from rpkclust.metrics import (
 
 
 def _to_markdown(frame: pd.DataFrame) -> str:
-    """Render a table without requiring pandas' optional tabulate package."""
     try:
         return frame.to_markdown(index=False)
     except ImportError:
@@ -41,11 +32,6 @@ def _to_markdown(frame: pd.DataFrame) -> str:
 
 
 class RPKClustEvaluator:
-    """
-    Paper-faithful evaluation suite for RPKClust pipeline.
-    Handles benchmarking, reporting, table export, and figure rendering.
-    """
-
     def __init__(
         self,
         output_dir: str = "results",

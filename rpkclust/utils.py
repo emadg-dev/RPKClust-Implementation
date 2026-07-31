@@ -7,7 +7,6 @@ SPARSE_RULES = ("sparse",)
 
 
 def _region_offsets(region: SemanticRegion) -> Set[int]:
-    """Return the set of byte offsets covered by a semantic region [offset, offset+width-1]."""
     start = region["offset"]
     end = start + region["width"]
     return set(range(start, end))
@@ -19,11 +18,6 @@ def _is_continuous(
     excluded_offsets: Set[int],
     max_offset: int,
 ) -> bool:
-    """
-    Paper Line 7: IsContinuous(FFOR, s, L)
-    Checks that the interval [s, s+L-1] is fully inside the FOR
-    and does NOT overlap any excluded semantic offset.
-    """
     if s + L > max_offset:
         return False
     for pos in range(s, s + L):
@@ -51,29 +45,15 @@ def extract_for_candidates(
 
     min_len = min(len(msg) for msg in X)
     max_offset = min(boundary_B, min_len)
-
-    # ----------------------------------------------------------
-    # Lines 1–3: Set construction
-    # ----------------------------------------------------------
-
-    FOR = set(range(max_offset))                       # [0, |F_FOR| - 1]
-    # print("FOR =", FOR)
+    FOR = set(range(max_offset))
 
     if semantic_regions is None:
         import warnings
         warnings.warn(
-            "Algorithm 2 requires typed semantic_regions (E_sem). "
-            "Without it, all FOR offsets become candidates (NOT paper-accurate). "
-            "Pass regions like {'name': 'constant', 'offset': 0, 'width': 2}.",
-            UserWarning,
-            stacklevel=2,
+            "Algorithm 2 requires typed semantic_regions (E_sem).",
         )
         semantic_regions = []
 
-    # Partition regions into excluded (E_sem) and sparse (F_sparse).
-    # Paper Line 1: E ← E_sem \ F_sparse
-    #   ALL non-sparse semantic regions are excluded by default.
-    #   Only sparse regions are re-introduced into the scanning sequence.
     sparse_regions: List[SemanticRegion] = []
     excluded_regions: List[SemanticRegion] = []
 
@@ -84,18 +64,11 @@ def extract_for_candidates(
         else:
             excluded_regions.append(region)
 
-    # Line 1: E ← E_sem \ F_sparse
-    #   E = byte offsets covered by excluded semantic regions
-    #   (sparse regions are NOT excluded — they are re-introduced in S).
-    #   Offset-based subtraction handles overlaps correctly: if a sparse
-    #   offset is also covered by a non-sparse region, it stays in E.
     all_semantic_offsets: Set[int] = set()
     sparse_offsets: Set[int] = set()
     sparse_starts: Set[int] = set()
 
     for region in excluded_regions:
-        # print(region)
-        # print(_region_offsets(region))
         all_semantic_offsets |= _region_offsets(region) & FOR
 
     for region in sparse_regions:
@@ -104,46 +77,25 @@ def extract_for_candidates(
         if offsets:
             sparse_starts.add(region["offset"])
 
-    # Offset-based subtraction matches E_sem \ F_sparse:
-    # sparse-covered offsets are removed from E, even if semantic
-    # detections overlap.
     E = all_semantic_offsets - sparse_offsets
-    # print("E =", E)
 
-    # F_sparse = starting offsets of sparse fields (bounded to FOR).
     F_sparse: Set[int] = sparse_starts & FOR
 
-    # Line 2: U ← [0, |F_FOR| − 1] \ E
-    #   Undetected offsets = FOR offsets not covered by excluded regions.
     U: Set[int] = FOR - E
-    # print("U =", U)
 
-    # Line 3: S ← U ∪ F_sparse
-    #   Scanning sequence = undetected offsets + sparse field starts,
-    #   bounded to the FOR.
     S: Set[int] = (U | F_sparse) & FOR
-    # print("S =", S)
-
-    # ----------------------------------------------------------
-    # Lines 4–11: Candidate generation
-    # ----------------------------------------------------------
 
     for L in candidate_lengths:
         for s in sorted(S):
-            # Universal bounds check: candidate must fit inside FOR.
             if s + L > max_offset:
                 continue
 
-            # Line 6: s ≡ 0 (mod L)  — length-aligned offset
             if s % L != 0:
                 continue
 
-            # Line 7: continuity check for L > 1
             if L > 1 and not _is_continuous(s, L, E, max_offset):
                 continue
 
-            # Line 8: C ← C ∪ {s}
-            # Extract values for downstream use.
             values = [msg[s:s + L] for msg in X]
 
             candidates.append({
@@ -154,8 +106,6 @@ def extract_for_candidates(
                 "values": values,
             })
 
-    # Deduplicate (same (offset, width) could arise from multiple L values
-    # or sparse re-introduction).
     seen: Set[Tuple[int, int]] = set()
     deduped: List[FORCandidate] = []
     for c in candidates:
@@ -169,18 +119,13 @@ def extract_for_candidates(
 TLVRecord = Dict[str, Any]
 Validator = Callable[[bytes, int, int, int, int, int, bytes], bool]
 
-
 def _parse_tlv_at(
     m: bytes,
     offset: int,
     t_len: int,
     l_len: int,
 ) -> Optional[TLVRecord]:
-    """
-    Parse one TLV at the given offset within an NFOR message slice.
-    Returns None if the TLV header or value overflows the message
-    (paper Lines 8–11: data integrity check).
-    """
+
     header_end = offset + t_len + l_len
     if header_end > len(m):
         return None
@@ -194,16 +139,13 @@ def _parse_tlv_at(
     value_start = header_end
     value_end = value_start + len_val
 
-    # Paper Line 8: overflow check.
     if value_end > len(m):
         return None
 
     value_bytes = m[value_start:value_end]
 
-    # Paper: T-V combined as keyword candidate.
     tv_bytes = type_bytes + value_bytes
 
-    # Paper Line 15: P stores m[start:end] (full TLV segment).
     tlv_bytes = m[offset:value_end]
 
     return {
@@ -228,12 +170,7 @@ def _default_validate_tlv(
     len_val: int,
     value_bytes: bytes,
 ) -> bool:
-    """
-    Generic fallback for ValidateTLV (paper Line 12).
-    The paper does not define ValidateTLV in detail — it is a semantic
-    checker that confirms valid encoding beyond the structural overflow
-    check. Protocol-specific validation should be injected when available.
-    """
+
     # Verify exact length match
     if len(value_bytes) != len_val:
         return False
@@ -252,12 +189,7 @@ def _detect_repeated_tlv(
     l_len: int,
     validate_tlv: Validator,
 ) -> Optional[TLVRecord]:
-    """
-    Paper Line 16: DetectRepeatedTLV(m, end, t_len, l_len).
-    A repeated TLV exists if another valid TLV begins exactly at `offset`
-    (immediately after the previous one). This extends boundaries for
-    consecutive repeated TLV patterns.
-    """
+
     rec = _parse_tlv_at(m, offset, t_len, l_len)
     if rec is None:
         return None
@@ -286,29 +218,6 @@ def extract_nfor_tlv_patterns(
     include_repeated_in_P: bool = True,
 ) -> Tuple[List[TLVRecord], List[Dict[str, Any]]]:
     """
-    RPKClust Algorithm 3: Keyword candidate generation in NFOR.
-
-    Parameters
-    ----------
-    X : List[bytes]
-        Full message set M. NFOR portions are extracted internally
-        starting at boundary_B.
-    boundary_B : int
-        FOR-NFOR boundary from Algorithm 1. NFOR = msg[boundary_B:].
-    t_len : int
-        Type field length in bytes.
-    l_len : int
-        Length field length in bytes.
-    validate_tlv : Optional[Validator]
-        Semantic validation function (paper Line 12). If None, a default
-        that accepts any structurally valid TLV is used. Protocol-specific
-        validation should be injected when available.
-    include_repeated_in_P : bool
-        If True (default), repeated TLV members are also appended to P.
-        Strict Algorithm 3 only records the initial pattern in P (Line 15)
-        before the repetition loop. Set False for strict paper compliance.
-        The repeated members are always counted for B regardless.
-
     Returns
     -------
     P : List[TLVRecord]
@@ -338,15 +247,10 @@ def extract_nfor_tlv_patterns(
         not isinstance(t_len, int) or isinstance(t_len, bool) or t_len <= 0
         or not isinstance(l_len, int) or isinstance(l_len, bool) or l_len <= 0
     ):
-        raise ValueError("t_len and l_len must be positive integers")
+        raise ValueError("t_len and l_len not valid")
 
     if boundary_B < 0:
         boundary_B = 0
-
-    # ----------------------------------------------------------
-    # Paper Line 2: max_len ← min{len(m) | m ∈ M_NFOR}
-    # Paper input is M_NFOR, so slice full messages into NFOR portions.
-    # ----------------------------------------------------------
 
     M_NFOR: List[Tuple[int, bytes]] = []
     for msg_idx, msg in enumerate(X):
@@ -357,28 +261,18 @@ def extract_nfor_tlv_patterns(
 
     max_len = min((len(m) for _, m in M_NFOR), default=0)
 
-    # ----------------------------------------------------------
-    # Paper Lines 3–27: Main loop
-    # ----------------------------------------------------------
-
     for msg_idx, m in M_NFOR:
 
-        # Paper Line 4: offset ← 0 (relative to NFOR start)
         offset = 0
 
-        # Paper Line 5: while offset ≤ len(m) − (t_len + l_len)
         while offset <= len(m) - (t_len + l_len):
 
-            # Paper Lines 6–7: extract type and length fields
-            # Paper Lines 8–11: data integrity (overflow) check
             rec = _parse_tlv_at(m, offset, t_len, l_len)
 
             if rec is None:
-                # Paper Line 9: offset ← offset + 1
                 offset += 1
                 continue
 
-            # Paper Line 12: ValidateTLV semantic check
             ok = validate_tlv(
                 m,
                 offset,
@@ -390,17 +284,13 @@ def extract_nfor_tlv_patterns(
             )
 
             if not ok:
-                # Paper Line 24: offset ← offset + 1
                 offset += 1
                 continue
 
-            # Paper Line 13: start ← offset
             start = offset
 
-            # Paper Line 14: end ← offset + t_len + l_len + len_val
             end = rec["end"]
 
-            # Paper Line 15: P ← P ∪ {(m[start:end], type_val)}
             rec.update({
                 "message_index": msg_idx,
                 "relative_start": rec["start"],
@@ -410,7 +300,6 @@ def extract_nfor_tlv_patterns(
             })
             P.append(rec)
 
-            # Paper Lines 16–18: DetectRepeatedTLV loop
             repeated_count = 0
             repeated_types: List[int] = []
 
@@ -424,8 +313,6 @@ def extract_nfor_tlv_patterns(
                 repeated_count += 1
                 repeated_types.append(next_rec["type_val"])
 
-                # Downstream convenience: record repeated TLV in P.
-                # Strict Algorithm 3 only adds the initial pattern (Line 15).
                 if include_repeated_in_P:
                     next_rec.update({
                         "message_index": msg_idx,
@@ -437,12 +324,8 @@ def extract_nfor_tlv_patterns(
                     })
                     P.append(next_rec)
 
-                # Paper Line 17: end ← end + t_len + l_len + new_len_val
                 end = next_rec["end"]
 
-            # Paper Lines 19–21: store B for repetition counts >= 1.
-            # (Paper text: "For repetition counts >= 1, start-end positions
-            # are stored in B.")
             if repeated_count > 0:
                 B.append({
                     "message_index": msg_idx,
@@ -456,15 +339,9 @@ def extract_nfor_tlv_patterns(
                     "bytes": m[start:end],
                 })
 
-            # Paper Line 22: offset ← end
             offset = end
 
     return P, B
-
-
-# ------------------------------------------------------------------
-#  Aggregation wrapper (downstream convenience, NOT Algorithm 3)
-# ------------------------------------------------------------------
 
 def extract_nfor_tlv_candidates(
     X: List[bytes],
@@ -480,7 +357,6 @@ def extract_nfor_tlv_candidates(
 
     This is NOT part of Algorithm 3 — it is a convenience layer that
     aggregates P by type_val across messages, using T-V combined values
-    (paper: "use T-V as the combined keyword field candidates").
 
     Returns
     -------
@@ -496,7 +372,6 @@ def extract_nfor_tlv_candidates(
         X, boundary_B, t_len=t_len, l_len=l_len, validate_tlv=validate_tlv,
     )
 
-    # Group by type_val, keeping first occurrence per message.
     by_type: Dict[int, Dict[int, TLVRecord]] = {}
 
     for rec in P:
@@ -519,7 +394,6 @@ def extract_nfor_tlv_candidates(
         for i in range(n):
             if i in per_msg:
                 rec = per_msg[i]
-                # Paper: T-V combined as keyword candidate.
                 values.append(rec["tv_bytes"])
                 offsets.append(rec["absolute_start"])
             else:

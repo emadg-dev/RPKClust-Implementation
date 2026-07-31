@@ -1,32 +1,12 @@
-
-# RPKClust Boundary Identification & Semantic Rules (semantic_rules.py)
-# Generic evaluation of structural semantics across packet byte traces.
-
-
 import numpy as np
-import math
 import zlib
 import struct
 from typing import List, Set, Tuple, Any, Optional, Dict, Callable
-
-
 class SemanticRules:
-    """
-    Evaluates semantic rules for boundary detection and field profiling.
-    All rules follow the formal definitions in RPKClust Section 3.3.
-    """
-
-    # ------------------------------------------------------------------
-    #  Helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _to_int_list(fragments: List[Any], width: int) -> Optional[List[int]]:
-        """
-        Converts a list of byte/int fragments into a uniform list of integers.
-        Returns None if any fragment is invalid, None, or has an incorrect byte length.
-        Validates every value is in [0, 2^(8*width) - 1].
-        """
+
         max_value = (1 << (8 * width)) - 1
         nums = []
         for f in fragments:
@@ -37,7 +17,7 @@ class SemanticRules:
                     return None
                 nums.append(int.from_bytes(f, 'big'))
             elif isinstance(f, int):
-                if f < 0 or f > max_value:          # range-check every element
+                if f < 0 or f > max_value:
                     return None
                 nums.append(f)
             else:
@@ -46,10 +26,7 @@ class SemanticRules:
 
     @staticmethod
     def _extract_fragments(X: List[bytes], offset: int, width: int) -> Optional[List[bytes]]:
-        """
-        Extracts a slice [offset : offset + width] from each message in cluster X.
-        Returns None if any message is too short for the slice.
-        """
+        
         fragments = []
         for msg in X:
             if offset + width > len(msg):
@@ -89,21 +66,29 @@ class SemanticRules:
             result ^= b
         return result & 0xFF
 
-    # ------------------------------------------------------------------
-    #  Rule 1 – Constant Field
-    # ------------------------------------------------------------------
-
     @classmethod
     def is_constant(cls, fragments, width=1):
+
         if len(fragments) < 4:
             return False
 
         first = fragments[0]
 
-        if any(f != first for f in fragments):
+        if first is None:
             return False
 
-        # don't classify all-zero or all-FF padding
+        if isinstance(first, (bytes, bytearray)):
+            if len(first) != width:
+                return False
+
+        for f in fragments:
+            if f != first:
+                return False
+
+            if isinstance(f, (bytes, bytearray)):
+                if len(f) != width:
+                    return False
+
         if isinstance(first, (bytes, bytearray)):
             if all(b == 0x00 for b in first):
                 return False
@@ -113,24 +98,15 @@ class SemanticRules:
 
         return True
 
-    # ------------------------------------------------------------------
-    #  Rule 2 – Sequence ID
-    # ------------------------------------------------------------------
-
     @classmethod
     def is_sequence(cls, fragments: List[Any], width: int = 2) -> bool:
-        """
-        Paper Eq. (2):
-            for all i in [1, n-1]:  delta = v_{i+1} - v_i = delta
-            AND  v_i in [0, 2^(8k) - 1]   (no wrap-around)
-        k = byte length (1-4).  delta is a positive constant step.
-        """
+       
         nums = cls._to_int_list(fragments, width)
         if nums is None or len(nums) < 3:
             return False
 
         delta = nums[1] - nums[0]
-        if delta <= 0:                         # must be an increment
+        if delta <= 0:
             return False
 
         for i in range(1, len(nums) - 1):
@@ -138,10 +114,6 @@ class SemanticRules:
                 return False
 
         return True
-
-    # ------------------------------------------------------------------
-    #  Rule 3 – Timestamp
-    # ------------------------------------------------------------------
 
     @classmethod
     def is_timestamp(
@@ -151,44 +123,26 @@ class SemanticRules:
         capture_start: Optional[float] = None,
         capture_end: Optional[float] = None,
         timezone_offset: float = 0.0,
-    ) -> bool:
-        """
-        Paper Eq. (3):  t_candidate in T_cap +/- Delta
-            T_cap = [t_start, t_end]   (capture window)
-            Delta  = 86400 s           (one day tolerance)
-        Input: 4/8-byte slices plus capture time range.
-        Supports timezone offsets.
+        ) -> bool:
 
-        The capture window is REQUIRED per the paper. If it is not
-        provided the rule returns False (conservative – no semantic
-        evidence of a timestamp).
-        """
         nums = cls._to_int_list(fragments, width)
         if nums is None or len(nums) < 3:
             return False
 
-        # Capture window is required by the paper.
         if capture_start is None or capture_end is None:
             return False
 
-        delta = 86400.0  # paper: +/- 86400 seconds
+        delta = 86400.0
 
         lo = capture_start - delta
         hi = capture_end + delta
 
-        # Apply timezone offset: the raw integer is interpreted as
-        # (timestamp + timezone_offset) so we compare in that frame.
         for v in nums:
             adjusted = float(v) + timezone_offset
             if not (lo <= adjusted <= hi):
                 return False
 
-        # Paper requires only that candidates fall inside T_cap ± Δ.
         return True
-
-    # ------------------------------------------------------------------
-    #  Rule 4 – Sparse Value
-    # ------------------------------------------------------------------
 
     @classmethod
     def is_sparse(cls, fragments, width=1):
@@ -208,17 +162,12 @@ class SemanticRules:
 
         unique_count = len(unique_vals)
 
-        # constant fields are not sparse
         if unique_count <= 1:
             return False
 
         ratio = unique_count / float(2 ** (8 * width))
 
         return ratio <= 0.02
-
-    # ------------------------------------------------------------------
-    #  Rule 5 – Address (paired fields)
-    # ------------------------------------------------------------------
 
     @classmethod
     def is_address(
@@ -228,22 +177,7 @@ class SemanticRules:
         width: int = 4,
         direction_labels: Optional[List[Any]] = None,
     ) -> bool:
-        """
-        Paper Eq. (5):
-            For all c in C:  s1^c ≡ s2^c   (direction equivalence)
-            AND  rho(s1, s2) <= -0.8      (Pearson correlation)
-        Input: adjacent 2-4 byte slices.
 
-        When direction_labels is provided (one label per message, e.g.
-        'client'/'server' or 0/1), the exact paper condition is evaluated:
-        within each direction class, field-1 values must all be identical,
-        field-2 values must all be identical, and the two classes must use
-        swapped address pairs.
-
-        When direction_labels is None, a reciprocal-pair heuristic is used
-        as a self-contained fallback: every (a, b) pair must have its
-        mirror (b, a) present, and the mapping must be bijective.
-        """
         nums1 = cls._to_int_list(fragments_f1, width)
         nums2 = cls._to_int_list(fragments_f2, width)
 
@@ -252,19 +186,15 @@ class SemanticRules:
         if len(nums1) != len(nums2):
             return False
 
-        # Non-zero variance to avoid division by zero in correlation.
         std1 = np.std(nums1)
         std2 = np.std(nums2)
         if std1 == 0 or std2 == 0:
             return False
 
-        # --- Condition 1: direction-based equivalence -----------------
         if direction_labels is not None:
-            # Exact paper implementation using class labels.
             if len(direction_labels) != len(nums1):
                 return False
 
-            # Group messages by direction class.
             classes: Dict[Any, Tuple[List[int], List[int]]] = {}
             for label, v1, v2 in zip(direction_labels, nums1, nums2):
                 if label not in classes:
@@ -275,7 +205,6 @@ class SemanticRules:
             if len(classes) < 2:
                 return False
 
-            # Within each class: field-1 constant, field-2 constant.
             class_pairs: Dict[Any, Tuple[int, int]] = {}
             for label, (f1_vals, f2_vals) in classes.items():
                 if len(set(f1_vals)) != 1 or len(set(f2_vals)) != 1:
@@ -286,8 +215,6 @@ class SemanticRules:
                     return False
                 class_pairs[label] = (a, b)
 
-            # Direction equivalence: the two classes must have swapped
-            # address pairs.  i.e. class1 = (A, B) and class2 = (B, A).
             pair_list = list(class_pairs.values())
             for i in range(len(pair_list)):
                 for j in range(i + 1, len(pair_list)):
@@ -297,7 +224,6 @@ class SemanticRules:
                         return False
 
         else:
-            # Heuristic fallback: reciprocal-pair check.
             pairs = list(zip(nums1, nums2))
             pair_set = set(pairs)
 
@@ -321,7 +247,6 @@ class SemanticRules:
                 if (b, a) not in pair_set:
                     return False
 
-        # --- Condition 2: Pearson correlation <= -0.8 -----------------
         corr_matrix = np.corrcoef(nums1, nums2)
         rho = corr_matrix[0, 1]
 
@@ -338,18 +263,9 @@ class SemanticRules:
         width: int = 2,
         messages: Optional[List[bytes]] = None,
         offset: int = 0,
-        strict: bool = True,
+        strict: bool = False,
     ) -> bool:
-        """
-        Paper Eq. (6):  exists A in A_set,  A(D) ≡ s
-        Paper's named algorithms A_set = {CRC-16, XOR-8}.
-        Input: 1/2/4-byte slices plus data range (full message + offset).
 
-        When strict=True (default) only the paper's named algorithms are
-        evaluated: XOR-8 for width 1, CRC-16 for width 2.
-        When strict=False, practical extensions are also tried: RFC 1071
-        Internet Checksum and CRC-32 for width 4.
-        """
         if not fragments or messages is None or len(messages) != len(fragments):
             return False
 
@@ -362,7 +278,7 @@ class SemanticRules:
                 return False
             raw_frags.append(bytes(f))
 
-        # ---- 1-byte: XOR-8 -----------------------------------------
+        # 1-byte: XOR-8
         if width == 1:
             xor8_exclude = True
             xor8_suffix = True
@@ -376,21 +292,19 @@ class SemanticRules:
                     xor8_suffix = False
             return xor8_exclude or xor8_suffix
 
-        # ---- 2-byte: CRC-16 (paper) + RFC 1071 (extension) ------------
+        # 2-byte: CRC-16 + RFC 1071
         if width == 2:
             crc16_match = True
             rfc1071_match = True
             for msg, frag in zip(messages, raw_frags):
                 val_big = int.from_bytes(frag, 'big')
 
-                # CRC-16/CCITT over payload excluding the checksum field.
                 payload_ex = msg[:offset] + msg[offset + width:]
                 calc_crc16 = cls._calc_crc16_ccitt(payload_ex)
                 if val_big != calc_crc16:
                     crc16_match = False
 
                 if not strict:
-                    # RFC 1071: zero out the checksum field then compute.
                     zeroed_msg = msg[:offset] + b'\x00\x00' + msg[offset + width:]
                     calc_rfc = cls._calc_internet_checksum(zeroed_msg)
                     if val_big != calc_rfc:
@@ -400,10 +314,10 @@ class SemanticRules:
                 return crc16_match
             return crc16_match or rfc1071_match
 
-        # ---- 4-byte: CRC-32 (extension only) ------------------------
+        # 4-byte: CRC-32
         if width == 4:
             if strict:
-                return False   # paper has no 4-byte algorithm
+                return False
 
             crc32_match_exclude = True
             crc32_match_suffix = True
@@ -425,10 +339,6 @@ class SemanticRules:
             return crc32_match_exclude or crc32_match_suffix
 
         return False
-
-    # ------------------------------------------------------------------
-    #  Rule registry
-    # ------------------------------------------------------------------
 
     RULE_REGISTRY: List[Dict[str, Any]] = [
 
@@ -452,9 +362,6 @@ class SemanticRules:
             "name": "timestamp",
             "widths": [4, 8],
             "type": "single",
-            # NOTE: identify_boundary special-cases this rule by name to
-            # pass capture_start/capture_end/timezone_offset. The lambda
-            # below is used only for standalone calls without metadata.
             "func": lambda frags, w, X, offset:
                 SemanticRules.is_timestamp(frags, width=w)
         },
@@ -487,35 +394,6 @@ class SemanticRules:
         },
     ]
 
-    # ------------------------------------------------------------------
-    #  Shared Semantic Region Scanner
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def _is_tlv_start(cls, X: List[bytes], offset: int, t_len: int = 1, l_len: int = 1) -> bool:
-        """
-        Checks if 'offset' marks the beginning of valid TLV fields across messages in X.
-        If a valid TLV structure starts at 'offset', this indicates the NFOR boundary.
-        """
-        valid_tlv_count = 0
-        total_msgs = len(X)
-        if total_msgs == 0:
-            return False
-
-        for msg in X:
-            if offset + t_len + l_len > len(msg):
-                continue
-            
-            len_bytes = msg[offset + t_len : offset + t_len + l_len]
-            len_val = int.from_bytes(len_bytes, "big")
-            
-            # Check if length field produces a valid payload slice within message bounds
-            if 0 < len_val <= (len(msg) - (offset + t_len + l_len)):
-                valid_tlv_count += 1
-
-        # If at least 80% of messages have a valid TLV payload structure starting at offset
-        return (valid_tlv_count / total_msgs) >= 0.8
-
     @classmethod
     def _scan_semantic_regions(
         cls,
@@ -526,43 +404,15 @@ class SemanticRules:
         direction_labels: Optional[List[Any]] = None,
         allowed_gap: int = 0,
     ) -> List[Dict[str, Any]]:
-        """
-        Shared scanner used by both identify_boundary and
-        collect_semantic_regions to avoid logic drift.
 
-        Scans ALL offsets 0..min_len-1. At each offset, tries every rule;
-        on the first rule that matches, records a semantic region dict
-        and stops trying further rules at that offset (first-match precedence).
-
-        Returns a list of regions:
-            {"name": str, "offset": int, "width": int}
-        where width is the FULL span of the matched field (2*width for
-        pair rules like address).
-        """
         if not X:
             return []
 
         min_len = min(len(m) for m in X)
         regions: List[Dict[str, Any]] = []
-
         current_max_boundary = 0
 
         for offset in range(min_len):
-
-            # print(f"\n----- OFFSET {offset} -----")
-            # print(f"Current Boundary = {current_max_boundary}")
-
-            # ENFORCE CONTINUITY: Stop if offset jumps past known boundary
-            # if offset > current_max_boundary + allowed_gap:
-            #     print(f"STOP: Continuity Rule at offset={offset}")
-            #     break
-
-            # NFOR TLV START GUARD:
-            # If a valid TLV pattern starts at this offset across messages,
-            # we have reached the NFOR region. Stop FOR scanning immediately!
-            # if offset >= 2 and cls._is_tlv_start(X, offset, t_len=1, l_len=1):
-            #     print(f"STOP: TLV detected at offset={offset}")
-            #     break
 
             matched_at_offset = False
 
@@ -573,7 +423,6 @@ class SemanticRules:
 
                 for width in rule["widths"]:
 
-                    # ---- Single-field rules ----
                     if rule["type"] == "single":
 
                         if offset + width > min_len:
@@ -595,13 +444,6 @@ class SemanticRules:
                             matched = rule["func"](fragments, width, X, offset)
 
                         if matched:
-
-                            # print(
-                            #     f"MATCH -> "
-                            #     f"{rule['name']} "
-                            #     f"offset={offset} "
-                            #     f"width={width}"
-                            # )
                             regions.append({
                                 "name": rule["name"],
                                 "offset": offset,
@@ -614,7 +456,6 @@ class SemanticRules:
 
                             break
 
-                    # ---- Pair-field rule (Address) ----
                     elif rule["type"] == "pair":
 
                         if offset + 2 * width > min_len:
@@ -645,10 +486,8 @@ class SemanticRules:
                                 current_max_boundary = offset + 2 * width
 
                             break
-        # print("\nSemantic Regions:")
-        # for r in regions:
-        #     print(r)
         return regions
+
     # ------------------------------------------------------------------
     #  Algorithm 1 – FOR-NFOR Boundary Detection
     # ------------------------------------------------------------------
@@ -662,20 +501,7 @@ class SemanticRules:
         timezone_offset: float = 0.0,
         direction_labels: Optional[List[Any]] = None,
     ) -> Tuple[int, Set[int]]:
-        """
-        RPKClust Algorithm 1: FOR-NFOR Boundary Detection.
 
-        Scans ALL offsets 0..min_len-1. At each offset, tries every rule;
-        on the first rule that matches, records the right-boundary endpoint
-        {offset + l_r - 1} in hit_offsets and stops trying further rules at
-        that offset (first-match precedence). The outer loop continues to
-        the next offset. Final boundary B = max(hit_offsets) + 1.
-
-        Input:  Message set M, semantic rule library R (from RULE_REGISTRY),
-                optional capture window [capture_start, capture_end] and
-                timezone_offset for timestamp rule.
-        Output: FOR-NFOR boundary B
-        """
         regions = cls._scan_semantic_regions(
             X,
             capture_start=capture_start,
@@ -703,16 +529,7 @@ class SemanticRules:
         timezone_offset: float = 0.0,
         direction_labels: Optional[List[Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """
-        Collect typed semantic regions from boundary scanning.
-
-        Returns a list of dicts: {"name", "offset", "width"}.
-        - Single-field rules have width = rule width (1, 2, 4, 8).
-        - Pair-field rules (address) have width = 2 * rule width.
-
-        These regions are needed by Algorithm 2 (extract_for_candidates)
-        to construct E_sem, F_sparse, and the scanning sequence S.
-        """
+    
         return cls._scan_semantic_regions(
             X,
             capture_start=capture_start,

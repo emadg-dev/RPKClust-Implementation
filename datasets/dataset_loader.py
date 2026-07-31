@@ -160,7 +160,7 @@ class PcapDatasetLoader:
 
             class_name = pcap.stem
 
-            print(f"Loading {class_name}")
+            # print(f"Loading {class_name}")
 
             X_part, _, meta_part = self.extract_payloads_with_metadata(
                 str(pcap)
