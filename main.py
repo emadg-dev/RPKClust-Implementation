@@ -2,7 +2,6 @@ import os
 import sys
 from pathlib import Path
 
-# Ensure local packages and modules resolve correctly
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from datasets import PcapDatasetLoader
@@ -29,9 +28,9 @@ def evaluate_pcap(loader, evaluator, pcap_file: Path):
 
 
 def main():
-    print("=" * 65)
+    print("=" * 25)
     print("Initializing RPKClust Evaluation")
-    print("=" * 65)
+    print("=" * 25)
 
     evaluator = RPKClustEvaluator(
         output_dir="results",
@@ -59,31 +58,20 @@ def main():
             pcap_file=pcap_file,
         )
 
-    X_ethernetip, y_ethernetip, ethernetip_metadata = pcap_loader.extract_folder_dataset(
-        "datasets/EthernetIP"
-    )
+    folder_datasets = [
+        ("datasets/EthernetIP", "EthernetIP"),
+        ("datasets/dnp3", "DNP3"),
+    ]
 
-    evaluator.run_diagnostics(
-        X_ethernetip,
-        y_ethernetip,
-        dataset_name="EthernetIP",
-        fit_kwargs={
-            "interaction_metadata": ethernetip_metadata
-        },
-    )
+    for folder_path, dataset_name in folder_datasets:
+        X, y, metadata = pcap_loader.extract_folder_dataset(folder_path)
+        evaluator.run_diagnostics(
+            X,
+            y,
+            dataset_name=dataset_name,
+            fit_kwargs={"interaction_metadata": metadata},
+        )
 
-    X_dnp3, y_dnp3, dnp3_metadata = pcap_loader.extract_folder_dataset(
-        "datasets/dnp3"
-    )
-
-    evaluator.run_diagnostics(
-        X_dnp3,
-        y_dnp3,
-        dataset_name="DNP3",
-        fit_kwargs={
-            "interaction_metadata": dnp3_metadata
-        },
-    )
 
     evaluator.export_summary_artifacts()
 

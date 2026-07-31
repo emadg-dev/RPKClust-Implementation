@@ -143,16 +143,11 @@ class RPKClustOptimizer:
         return float(np.clip(posterior, 1e-6, 1.0 - 1e-6))
 
     def compute_p_bit(self, values: List[Any]) -> float:
-        """
-        Bit-Use Constraint Probability p_bit (Eq. 7–10).
-        Includes float overflow protection, keyword size guards, and vectorized 
-        computation for real network PCAP datasets.
-        """
+
         valid_vals = [_val_to_int(v) for v in values if v is not None]
         if not valid_vals:
             return 1e-6
 
-        # Constant field filter: single unique value carries no keyword info.
         if len(set(valid_vals)) <= 1:
             return 1e-6
 
@@ -160,13 +155,8 @@ class RPKClustOptimizer:
         if max_val == 0:
             return 1e-6
 
-        msb = max_val.bit_length() - 1  # 0-based MSB position
+        msb = max_val.bit_length() - 1
 
-        # ---------------------------------------------------------------------
-        # FIX 1: KEYWORD SIZE GUARD
-        # Protocol keywords (opcodes, type tags, flags) are compact (<= 8 bytes / 64 bits).
-        # Fields exceeding 64 bits are variable payload blobs, not keyword fields.
-        # ---------------------------------------------------------------------
         if msb > 64:
             return 1e-6
 
@@ -180,10 +170,6 @@ class RPKClustOptimizer:
         # Paper: "Q(k) = proportion of values where MSB >= k" (Vectorized)
         q_k = np.mean(individual_msbs[:, None] >= k_indices[None, :], axis=0)
 
-        # ---------------------------------------------------------------------
-        # FIX 2: FLOAT OVERFLOW GUARD
-        # Paper Eq. (7): P(k) = 1 - 1 / (2^(MSB+1-k))
-        # ---------------------------------------------------------------------
         exponents = (msb + 1) - k_indices
         p_k = np.ones(msb + 1)
         safe_mask = exponents <= 1000

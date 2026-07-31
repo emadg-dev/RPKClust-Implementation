@@ -204,7 +204,7 @@ class RPKClustEvaluator:
 
         print("\n" + "=" * 65)
         print(f"  RPKCLUST PAPER DIAGNOSTIC REPORT: {dataset_name}")
-        print("=" * 65)
+        print("=" * 25)
 
         # Memory baseline before run
         mem_before = measure_memory_usage()
@@ -290,7 +290,7 @@ class RPKClustEvaluator:
             print(f"\n  Selected Keyword Tag        : {model.best_candidate.get('tag')}")
             print(f"  Selected Keyword Type       : {model.best_candidate.get('type')}")
             print(f"  Selected Keyword Posterior  : {model.best_candidate.get('prob', 0.0):.4f}")
-        print("=" * 65 + "\n")
+        print("=" * 25 + "\n")
 
         # ---- Aggregate Summary Record
         summary_record = {
