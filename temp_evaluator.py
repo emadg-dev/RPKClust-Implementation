@@ -77,6 +77,126 @@ class RPKClustEvaluator:
             "figure.titlesize": 13,
         })
 
+    def _export_boundary_keyword_table(self):
+        """
+        Exports boundary inference comparison table.
+        """
+
+        rows = []
+
+        for record in self.summary_records:
+            true_boundary = record.get("True_Boundary", None)
+            inferred_boundary = record.get("Boundary_Inferred", 0)
+
+            if true_boundary is not None:
+                error = inferred_boundary - true_boundary
+                err_percent = (
+                    abs(error) / true_boundary * 100
+                    if true_boundary > 0 else 0
+                )
+            else:
+                error = None
+                err_percent = None
+
+            rows.append({
+                "Sample": record.get("Dataset"),
+                "True Offset": true_boundary,
+                "Infer Offset": inferred_boundary,
+                "Err. Per.": (
+                    f"{err_percent:.1f}%"
+                    if err_percent is not None else "N/A"
+                )
+            })
+
+        df = pd.DataFrame(rows)
+
+        path = os.path.join(
+            self.tables_dir,
+            "boundary_keyword_evaluation.md"
+        )
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# Boundary Identification Evaluation\n\n")
+            f.write(_to_markdown(df))
+            f.write("\n")
+
+        print(
+            f"[Artifact Export] Boundary table saved:\n  - {path}"
+        )
+
+        return path
+
+    def _generate_keyword_candidate_count_figure(
+        self,
+        df_summary: pd.DataFrame
+        ):
+        """
+        Generates keyword candidate count comparison.
+        """
+
+        datasets = df_summary["Dataset"].tolist()
+
+        for_candidates = df_summary["FOR_Candidates"].values
+        nfor_candidates = df_summary["NFOR_Candidates"].values
+
+        x = np.arange(len(datasets))
+        width = 0.35
+
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+
+        ax.bar(
+            x - width/2,
+            for_candidates,
+            width,
+            label="FOR Candidates"
+        )
+
+        ax.bar(
+            x + width/2,
+            nfor_candidates,
+            width,
+            label="NFOR Candidates"
+        )
+
+        ax.set_ylabel("Number of Candidates")
+        ax.set_title(
+            "RPKClust Keyword Candidate Generation"
+        )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(
+            datasets,
+            rotation=20,
+            ha="right"
+        )
+
+        ax.legend()
+        ax.grid(
+            axis="y",
+            linestyle="--",
+            alpha=0.5
+        )
+
+        plt.tight_layout()
+
+        out_file = os.path.join(
+            self.figures_dir,
+            f"keyword_candidate_count.{self.fig_format}"
+        )
+
+        plt.savefig(
+            out_file,
+            dpi=self.dpi
+        )
+
+        plt.close()
+
+        print(
+            f"[Artifact Export] Candidate count plot saved:\n  - {out_file}"
+        )
+
+        return out_file
+
     def run_diagnostics(
         self,
         X: List[bytes],
@@ -255,7 +375,18 @@ class RPKClustEvaluator:
         # 2. Generate Comparative Figure Across Datasets
         fig_path = self._generate_comparative_metrics_figure(df_summary)
 
-        return md_path, fig_path
+        candidate_fig_path = self._generate_keyword_candidate_count_figure(
+            df_summary
+        )
+
+        boundary_table_path = self._export_boundary_keyword_table()
+
+        return (
+            md_path,
+            fig_path,
+            candidate_fig_path,
+            boundary_table_path
+        )
 
     def _export_candidate_table(self, candidates: List[Dict[str, Any]], dataset_key: str):
         """Exports top candidate ranking breakdown to Markdown."""
