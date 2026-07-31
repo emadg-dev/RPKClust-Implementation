@@ -237,12 +237,12 @@ class RPKClustEvaluator:
         # Paper-formatted Markdown Table
         paper_table_cols = [
             "Dataset", "Messages", "Boundary_Inferred", "Homogeneity", 
-            "Completeness", "V_Measure", "ARI", "Accuracy", "Time_s"
+            "Completeness", "V_Measure",  "Accuracy", "Time_s"
         ]
         df_paper = df_summary[paper_table_cols].copy()
         df_paper.columns = [
             "Dataset", "Messages", "Boundary (B)", "Homogeneity (h)", 
-            "Completeness (c)", "V-Measure (v)", "ARI", "Acc", "Time (s)"
+            "Completeness (c)", "V-Measure (v)",  "Acc", "Time (s)"
         ]
 
         with open(md_path, "w", encoding="utf-8") as f:
@@ -317,7 +317,7 @@ class RPKClustEvaluator:
     def _generate_comparative_metrics_figure(self, df_summary: pd.DataFrame) -> str:
         """Generates a multi-metric comparative bar chart across all evaluated datasets."""
         datasets = df_summary["Dataset"].tolist()
-        metrics = ["Homogeneity", "Completeness", "V_Measure", "ARI"]
+        metrics = ["Homogeneity", "Completeness", "V_Measure"]
 
         x = np.arange(len(datasets))
         width = 0.18
@@ -330,7 +330,7 @@ class RPKClustEvaluator:
             ax.bar(x + (i - 1.5) * width, scores, width, label=metric, color=colors[i])
 
         ax.set_ylabel("Score [0.0 - 1.0]")
-        ax.set_title("RPKClust Clustering Performance Across Benchmark Datasets")
+        ax.set_title("RPKClust Clustering Performance")
         ax.set_xticks(x)
         ax.set_xticklabels(datasets, rotation=15, ha="right")
         ax.set_ylim(0.0, 1.05)

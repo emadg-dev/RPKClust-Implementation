@@ -26,7 +26,7 @@ class PcapDatasetLoader:
         self.last_metadata: List[Dict[str, Any]] = []
         os.makedirs(self.target_dir, exist_ok=True)
 
-    def download_pcap(self, url: str = DEFAULT_URL, filename: str = "sample_protocol.pcap") -> str:
+    def download_pcap(self, url: str = DEFAULT_URL, filename= "sample_protocol.pcap") -> str:
         """Downloads a PCAP file if it does not already exist locally."""
         file_path = os.path.join(self.target_dir, filename)
         if not os.path.exists(file_path):

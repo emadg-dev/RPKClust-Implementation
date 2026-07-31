@@ -143,6 +143,8 @@ def evaluate_clustering(
     exec_time: float = 0.0,
     memory_mb: Optional[float] = None,
 ) -> Dict[str, Any]:
+    labels_true = np.asarray(labels_true)
+    labels_pred = np.asarray(labels_pred)
     """
     Evaluates clustering performance using paper metrics (Section 4.2)
     and supplementary analysis metrics.
@@ -171,8 +173,6 @@ def evaluate_clustering(
     memory_mb : optional float
         Memory usage in MB. If None, measured automatically.
     """
-    labels_true = np.asarray(labels_true)
-    labels_pred = np.asarray(labels_pred)
     if labels_true.ndim != 1 or labels_pred.ndim != 1:
         raise ValueError("labels_true and labels_pred must be one-dimensional")
     if len(labels_true) != len(labels_pred):
@@ -192,38 +192,47 @@ def evaluate_clustering(
         len(set(labels_pred[valid_mask])) if num_valid > 0 else 0
     )
 
+    # -----------------------------------------------------------------
+    # SINGLE-CLASS GUARD: Check ground-truth class count
+    # -----------------------------------------------------------------
+    num_true_classes = len(set(labels_true))
+
+    if num_true_classes > 1:
+        homo_val = round(homogeneity_score(labels_true, labels_pred), 4)
+        comp_val = round(completeness_score(labels_true, labels_pred), 4)
+        v_val = round(v_measure_score(labels_true, labels_pred), 4)
+        ari_val = round(adjusted_rand_score(labels_true, labels_pred), 4)
+        nmi_val = round(normalized_mutual_info_score(labels_true, labels_pred), 4)
+    else:
+        # For single-class datasets (e.g., Modbus/DNP3 PCAPs labeled under 1 name),
+        # entropy is 0. Scikit-learn outputs 0.0 due to division by zero.
+        homo_val = 1.0      # Homogeneity is trivially 1.0
+        comp_val = np.nan   # Undefined entropy
+        v_val = np.nan      # Undefined entropy
+        ari_val = np.nan    # Undefined agreement beyond chance
+        nmi_val = np.nan    # Undefined entropy
+
     # ---- Paper Metrics (Primary) ----
     metrics: Dict[str, Any] = {
         # Paper Eq. 18: Homogeneity
-        "Homogeneity": round(
-            homogeneity_score(labels_true, labels_pred), 4
-        ),
+        "Homogeneity": homo_val,
         # Paper Eq. 19: Completeness
-        "Completeness": round(
-            completeness_score(labels_true, labels_pred), 4
-        ),
+        "Completeness": comp_val,
         # Paper Eq. 20: V-Measure
-        "V-Measure": round(
-            v_measure_score(labels_true, labels_pred), 4
-        ),
+        "V-Measure": v_val,
         # Paper Section 4.5: Execution Time
         "Execution Time (s)": round(exec_time, 4),
         # Paper Section 4.5: Memory Overhead
         "Memory (MB)": memory_mb,
         # Paper Section 4.2: Clusters Found
         "Clusters Found": num_clusters,
+        "ARI": ari_val,
+        "NMI": nmi_val,
+        # Clustering Accuracy works regardless of class count
+        "Clustering Accuracy": round(
+            clustering_accuracy(labels_true, labels_pred), 4
+        ),
     }
-
-    # ---- Supplementary Metrics (NOT in paper) ----
-    metrics["ARI"] = round(
-        adjusted_rand_score(labels_true, labels_pred), 4
-    )
-    metrics["NMI"] = round(
-        normalized_mutual_info_score(labels_true, labels_pred), 4
-    )
-    metrics["Clustering Accuracy"] = round(
-        clustering_accuracy(labels_true, labels_pred), 4
-    )
 
     # Internal metrics require feature matrix and >= 2 clusters.
     if (
