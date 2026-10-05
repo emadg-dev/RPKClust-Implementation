@@ -1,23 +1,7 @@
-"""
-RPKClust Evaluation Metrics (Section 4).
 
-Paper Section 4.2 uses three primary metrics:
-    - Homogeneity (Eq. 18): 1 - H(T|C) / H(T)
-    - Completeness (Eq. 19): 1 - H(C|T) / H(C)
-    - V-Measure (Eq. 20): 2 * h * c / (h + c)
-
-Paper Section 4.5 also reports:
-    - Execution time (seconds)
-    - Memory overhead (MB)
-
-Paper Section 4.3 reports:
-    - FOR-NFOR boundary inference error (offset difference)
-
-Supplementary metrics (NOT in paper, useful for analysis):
-    - ARI, NMI, Silhouette, Davies-Bouldin, Clustering Accuracy
-"""
 
 import time
+import warnings
 import numpy as np
 from typing import Dict, Any, Optional, List, Tuple
 from sklearn.metrics import (
@@ -36,11 +20,7 @@ def convert_bytes_to_feature_matrix(
     messages: List[bytes],
     max_len: Optional[int] = None,
 ) -> np.ndarray:
-    """
-    Converts a list of byte strings into a fixed-width numerical feature
-    matrix suitable for internal clustering metrics (Silhouette, DB).
-    Pads shorter messages with 0s and crops longer messages.
-    """
+ 
     if max_len is None:
         max_len = max(len(m) for m in messages) if messages else 0
 
@@ -55,13 +35,7 @@ def convert_bytes_to_feature_matrix(
 
 
 def clustering_accuracy(labels_true: np.ndarray, labels_pred: np.ndarray) -> float:
-    """
-    Clustering accuracy with optimal label matching using the Hungarian
-    algorithm. Cluster IDs are arbitrary, so we find the optimal assignment
-    between predicted and true labels that maximizes accuracy.
-
-    Returns a float in [0, 1].
-    """
+    
     labels_true = np.asarray(labels_true)
     labels_pred = np.asarray(labels_pred)
 
@@ -99,10 +73,7 @@ def clustering_accuracy(labels_true: np.ndarray, labels_pred: np.ndarray) -> flo
 
 
 def measure_memory_usage() -> float:
-    """
-    Returns current memory usage in MB.
-    Uses psutil if available, otherwise returns 0.0.
-    """
+
     try:
         import psutil
         import os
@@ -116,15 +87,7 @@ def evaluate_boundary(
     true_boundary: int,
     inferred_boundary: int,
 ) -> Dict[str, Any]:
-    """
-    Paper Section 4.3: FOR-NFOR boundary inference evaluation.
-
-    Returns dict with:
-        - true_offset: ground truth boundary
-        - inferred_offset: inferred boundary
-        - error: difference (inferred - true)
-        - error_percentage: |error| / true_offset * 100
-    """
+ 
     error = inferred_boundary - true_boundary
     error_pct = abs(error) / true_boundary * 100 if true_boundary > 0 else 0.0
 
@@ -145,34 +108,7 @@ def evaluate_clustering(
 ) -> Dict[str, Any]:
     labels_true = np.asarray(labels_true)
     labels_pred = np.asarray(labels_pred)
-    """
-    Evaluates clustering performance using paper metrics (Section 4.2)
-    and supplementary analysis metrics.
-
-    Paper metrics (primary):
-        - Homogeneity (Eq. 18)
-        - Completeness (Eq. 19)
-        - V-Measure (Eq. 20)
-        - Execution Time
-        - Memory Overhead
-
-    Supplementary metrics (NOT in paper):
-        - ARI, NMI, Clustering Accuracy
-        - Silhouette, Davies-Bouldin (require feature_matrix)
-
-    Parameters
-    ----------
-    labels_true : array-like
-        Ground truth message type labels.
-    labels_pred : array-like
-        Predicted cluster labels.
-    feature_matrix : optional np.ndarray
-        Numeric feature matrix for internal clustering metrics.
-    exec_time : float
-        Execution time in seconds.
-    memory_mb : optional float
-        Memory usage in MB. If None, measured automatically.
-    """
+ 
     if labels_true.ndim != 1 or labels_pred.ndim != 1:
         raise ValueError("labels_true and labels_pred must be one-dimensional")
     if len(labels_true) != len(labels_pred):
@@ -191,10 +127,15 @@ def evaluate_clustering(
     num_clusters = (
         len(set(labels_pred[valid_mask])) if num_valid > 0 else 0
     )
+# -----------------------------------------------------------------
+    # SINGLE-CLASS GUARD
+    #
+    # Homogeneity/completeness/V-measure are undefined when the ground
+    # truth collapses to a single class (H(T) = 0).  Reporting
+    # homogeneity = 1.0 there would fabricate a perfect score, so NaN is
+    # returned instead.
+    # -----------------------------------------------------------------
 
-    # -----------------------------------------------------------------
-    # SINGLE-CLASS GUARD: Check ground-truth class count
-    # -----------------------------------------------------------------
     num_true_classes = len(set(labels_true))
 
     if num_true_classes > 1:
@@ -204,13 +145,18 @@ def evaluate_clustering(
         ari_val = round(adjusted_rand_score(labels_true, labels_pred), 4)
         nmi_val = round(normalized_mutual_info_score(labels_true, labels_pred), 4)
     else:
-        # For single-class datasets (e.g., Modbus/DNP3 PCAPs labeled under 1 name),
-        # entropy is 0. Scikit-learn outputs 0.0 due to division by zero.
-        homo_val = 1.0      # Homogeneity is trivially 1.0
-        comp_val = np.nan   # Undefined entropy
-        v_val = np.nan      # Undefined entropy
-        ari_val = np.nan    # Undefined agreement beyond chance
-        nmi_val = np.nan    # Undefined entropy
+        warnings.warn(
+            "Ground truth contains a single class; homogeneity, "
+            "completeness, V-measure, ARI and NMI are undefined and "
+            "reported as NaN.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        homo_val = np.nan
+        comp_val = np.nan
+        v_val = np.nan
+        ari_val = np.nan
+        nmi_val = np.nan
 
     # ---- Paper Metrics (Primary) ----
     metrics: Dict[str, Any] = {
@@ -269,19 +215,7 @@ def evaluate_keyword_inference(
     candidates: List[Dict[str, Any]],
     true_keyword_offset: Any,
 ) -> Dict[str, Any]:
-    """
-    Paper Section 4.4: Keyword inference evaluation.
-
-    Evaluates whether the real keyword field was correctly identified
-    and ranked first.
-
-    Parameters
-    ----------
-    candidates : list of candidate dicts
-        Must be sorted by 'prob' descending (as output by RPKClust pipeline).
-    true_keyword_offset : int or tuple
-        The byte offset(s) of the real keyword field(s).
-    """
+ 
     if not candidates:
         return {
             "True Keyword Offset": true_keyword_offset,

@@ -71,14 +71,17 @@ class RPKClustEvaluator:
         rows = []
 
         for record in self.summary_records:
-            true_boundary = record.get("True_Boundary", None)
+            true_boundary = record.get("Boundary_True", None)
             inferred_boundary = record.get("Boundary_Inferred", 0)
 
-            if true_boundary is not None:
+            if (
+                true_boundary is not None
+                and isinstance(true_boundary, int)
+                and true_boundary > 0
+            ):
                 error = inferred_boundary - true_boundary
                 err_percent = (
                     abs(error) / true_boundary * 100
-                    if true_boundary > 0 else 0
                 )
             else:
                 error = None
@@ -323,7 +326,7 @@ class RPKClustEvaluator:
 
         return summary_record
 
-    def export_summary_artifacts(self) -> Tuple[str, str]:
+    def export_summary_artifacts(self) -> Tuple[str, str, str, str]:
         """
         Exports aggregate results across all evaluated datasets to Markdown tables
         and comparative figures.

@@ -1,20 +1,4 @@
-"""
-Netplier-style Clustering Constraints for RPKClust Stage 1.
 
-RPKClust Section 3.6: "we use the four constraints proposed in
-Netplier: message similarity constraint, remote coupling constraint,
-structural consistency constraint, and dimensional constraint."
-
-The RPKClust paper does not redefine these constraints — it references
-Netplier [29] directly. This implementation follows Netplier's definitions
-adapted for RPKClust's region-partitioned (non-MSA) pipeline.
-
-Netplier reference: Ye et al., "NETPLIER: Probabilistic Network Protocol
-Reverse Engineering from Message Traces," NDSS 2021.
-
-NOTE: Because the paper does not provide exact formulas, these are labeled
-as "Netplier-style approximations aligned with RPKClust's described inputs."
-"""
 
 import numpy as np
 import warnings
@@ -23,12 +7,12 @@ from collections import defaultdict
 
 
 class ClusteringConstraints:
-    """
-    Four clustering constraints from Netplier, adapted for RPKClust.
 
-    Each constraint returns a float in [0, 1] representing the degree
-    of constraint satisfaction for the current clustering.
-    """
+    # Direction vocabularies accepted in interaction_metadata["direction"].
+    # NetPlier's ground-truth extractor emits "request"/"response";
+    # some harnesses use the client/server role naming.
+    CLIENT_LABELS = ("client", "request")
+    SERVER_LABELS = ("server", "response")
 
     # ==============================================================
     #  1. Message Similarity Constraint
@@ -36,13 +20,6 @@ class ClusteringConstraints:
 
     @staticmethod
     def _byte_similarity(a: bytes, b: bytes) -> float:
-        """
-        Netplier byte-level similarity: number of matching bytes at the
-        same position divided by the maximum message length.
-        Extra bytes in the longer message count as mismatches.
-
-        Netplier: s = (number of same bytes) / (total bytes compared).
-        """
         max_len = max(len(a), len(b))
         if max_len == 0:
             return 1.0
@@ -56,21 +33,7 @@ class ClusteringConstraints:
         labels: np.ndarray,
         X: List[bytes],
     ) -> float:
-        """
-        Netplier Message Similarity Constraint.
-
-        Netplier: "messages in the same cluster should have higher
-        similarity than messages in different clusters."
-
-        Computes byte-level similarity (matching_bytes / max_len) for all
-        message pairs. Separates into intra-cluster and inter-cluster
-        score distributions. The constraint is satisfied when intra-
-        cluster scores are consistently higher than inter-cluster scores.
-
-        Returns the probability that the constraint is observed,
-        based on the overlap (false match + false non-match) between
-        the two distributions.
-        """
+       
         n = len(labels)
         if len(X) != n:
             raise ValueError("labels and X must contain the same number of messages")
@@ -100,13 +63,6 @@ class ClusteringConstraints:
         intra_arr = np.array(intra_scores)
         inter_arr = np.array(inter_scores)
 
-        # Netplier: compute false match and false non-match errors.
-        # False match: inter-cluster score >= threshold
-        #   (different types incorrectly grouped together).
-        # False non-match: intra-cluster score <= threshold
-        #   (same type incorrectly split apart).
-        #
-        # Use a threshold at the midpoint between the two means.
         threshold = (np.mean(intra_arr) + np.mean(inter_arr)) / 2.0
 
         # False match rate: inter scores above threshold.
@@ -130,19 +86,7 @@ class ClusteringConstraints:
         X: List[bytes],
         interaction_metadata: Optional[List[Dict[str, Any]]] = None,
     ) -> float:
-        """
-        Netplier Remote Coupling Constraint.
-
-        Netplier: "client and server clusters should have corresponding
-        relationships." Uses interaction metadata (source/dest IP, ports,
-        timestamps, direction, session_id) to pair request-response
-        messages and check that clusters correspond across client/server
-        sides.
-
-        If interaction_metadata is None or lacks session/pairing info,
-        this constraint cannot be computed. A neutral score (0.5) is
-        returned with a warning.
-        """
+       
         if len(X) != len(labels):
             raise ValueError("labels and X must contain the same number of messages")
         if interaction_metadata is None:
@@ -185,8 +129,16 @@ class ClusteringConstraints:
             return 0.5
 
         # Separate messages by direction.
-        client_indices = [i for i in range(n) if directions[i] == "client"]
-        server_indices = [i for i in range(n) if directions[i] == "server"]
+        client_indices = [
+            i
+            for i in range(n)
+            if directions[i] in ClusteringConstraints.CLIENT_LABELS
+        ]
+        server_indices = [
+            i
+            for i in range(n)
+            if directions[i] in ClusteringConstraints.SERVER_LABELS
+        ]
 
         if not client_indices or not server_indices:
             # All messages from one direction — cannot check coupling.
@@ -243,10 +195,6 @@ class ClusteringConstraints:
         if not pairs:
             return 0.5
 
-        # Check cluster correspondence: for each client cluster,
-        # what fraction of its paired server messages land in a
-        # single dominant server cluster?
-        # Build cluster -> paired cluster mapping.
         client_cluster_pairs: Dict[int, List[int]] = defaultdict(list)
 
         for ci, si in pairs:
@@ -269,37 +217,13 @@ class ClusteringConstraints:
 
         return float(np.mean(cluster_correspondence_scores))
 
-    # ==============================================================
-    #  3. Structural Consistency Constraint
-    # ==============================================================
-
     @staticmethod
     def structural_consistency(
         labels: np.ndarray,
         candidate: Dict[str, Any],
         X: Optional[List[bytes]] = None,
     ) -> float:
-        """
-        Netplier Structure Coherence Constraint.
-
-        Netplier: "messages of the same type share similar field
-        structure." After clustering by candidate field, re-aligns
-        messages within each cluster and computes alignment gap ratio.
-        p_s = 1 - (avg_gaps / total_length).
-
-        RPKClust adaptation: Since RPKClust does not use MSA, we adapt
-        this constraint to check full-message structural consistency
-        within each cluster using the message data X.
-
-        Requires X (full message set) to avoid circularity — clustering
-        by candidate values and then checking candidate value consistency
-        would be tautological. We check whether full messages within
-        each cluster share similar structure (byte-level consistency
-        at non-keyword offsets, length consistency, TLV validity).
-
-        Falls back to candidate-only checks if X is not provided
-        (labeled as NOT paper-accurate).
-        """
+       
         values = candidate["values"]
         cand_type = candidate.get("type", "FOR")
         if len(labels) != len(values):
@@ -323,11 +247,7 @@ class ClusteringConstraints:
             clusters.setdefault(int(label), []).append(idx)
 
         if X is not None:
-            # ---- Full-message structural consistency (preferred) ----
-            # Netplier: messages in the same cluster should share
-            # similar field structure. Without MSA, we measure this as
-            # intra-cluster message length consistency and byte-level
-            # agreement at non-keyword offsets.
+     
             cluster_scores: List[float] = []
 
             for cluster_id, indices in clusters.items():
@@ -346,10 +266,6 @@ class ClusteringConstraints:
                 else:
                     len_score = 1.0
 
-                # 2. Byte-level structural agreement at non-keyword
-                #    positions: for each offset not covered by the
-                #    candidate field, check how consistent the bytes
-                #    are across messages in the cluster.
                 cand_offset = candidate.get("offset", 0)
                 cand_width = candidate.get("width", 1)
 
@@ -357,9 +273,7 @@ class ClusteringConstraints:
                 cand_offsets = set()
                 if cand_type == "FOR":
                     cand_offsets = set(range(cand_offset, cand_offset + cand_width))
-                # For NFOR, candidate offsets vary per message, so
-                # we skip offset-level exclusion and just use length.
-
+           
                 min_len = min(lengths)
                 if min_len > 0:
                     agreement_scores = []
@@ -450,24 +364,7 @@ class ClusteringConstraints:
 
     @staticmethod
     def dimensional_constraint(labels: np.ndarray) -> float:
-        """
-        Netplier Dimension Constraint.
-
-        Netplier considers two metrics:
-        1. r_distinct_value = (number of distinct field values) /
-           (number of messages) — compared to threshold t_value = 0.5.
-           If r > t_value, too many clusters → unlikely keyword.
-
-        2. r_single = (number of single-message clusters) /
-           (number of clusters) — compared to threshold t_single = 0.5.
-           If r > t_single, too many singleton clusters → unlikely keyword.
-
-        If both metrics are below their thresholds, p_d = 0.95 (high).
-        Otherwise, p_d = 0.1 (low).
-
-        The thresholds are conservatively set at 0.5 to avoid
-        discarding true keywords.
-        """
+   
         n = len(labels)
         if n == 0:
             return 0.0
@@ -490,11 +387,6 @@ class ClusteringConstraints:
             1 for size in cluster_sizes.values() if size == 1
         )
 
-        # Netplier thresholds (conservatively set at 0.5).
-        # Paper: "If both values are less than their thresholds, the
-        # probability of the dimension constraint is high, e.g., 0.95.
-        # Otherwise, it is set to a low probability, e.g., 0.1."
-        # Use <= to be inclusive at the boundary (conservative).
         t_value = 0.5
         t_single = 0.5
         r_single = single_message_clusters / k if k > 0 else 1.0
