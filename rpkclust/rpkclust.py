@@ -104,27 +104,20 @@ class RPKClust:
             candidate["stage1_prob"] = p_f
             candidate["constraint_values"] = constraint_values
 
-            p_bit = self.optimizer.compute_p_bit(candidate["values"])
-            candidate["p_bit"] = p_bit
-
-            cand_type = candidate.get("type", "FOR")
-            cand_offset = candidate.get("offset", 0)
-            p_offset = self.optimizer.compute_p_offset(
-                cand_type, cand_offset, self.boundary_B
+            s = self.optimizer.score_candidate(
+                candidate, p_f, self.boundary_B
             )
-            candidate["p_offset"] = p_offset
-
-            final_prob = self.optimizer.bayesian_update(
-                p_bit, p_offset, p_f
-            )
-            candidate["prob"] = final_prob
+            candidate["p_bit"] = s["p_bit"]
+            candidate["p_offset"] = s["p_offset"]
+            candidate["score"] = s["score"]      # log-odds; used for ranking
+            candidate["prob"] = s["prob"]        # sigmoid(score); display only
 
         scored_candidates = [c for c, _, _ in stage1_ranked]
         self.candidates = scored_candidates
 
         print("Keyword Selection...")
         if self.candidates:
-            self.candidates.sort(key=lambda c: c["prob"], reverse=True)
+            self.candidates.sort(key=lambda c: c["score"], reverse=True)
             self.best_candidate = self.candidates[0]
             print(f"  Best: {self.best_candidate.get('tag', '?')} "
                   f"prob={self.best_candidate['prob']:.4f}")

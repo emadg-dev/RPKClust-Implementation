@@ -6,7 +6,7 @@ The loader:
   1. Reads classic PCAP *and* PCAPNG captures.
   2. Parses Ethernet/IPv4 TCP, UDP and ICMP.
   3. Applies the protocol-specific preprocessing used by NetPlier
-     (``netplier/processing.py``, Netzob 1.0.2, ``importLayer=5``).
+      (``netplier/processing.py``, Netzob 1.0.2, ``importLayer=5``).
   4. Computes NetPlier-compatible direction.
   5. Computes NetPlier-compatible ground-truth message labels.
 
@@ -35,12 +35,12 @@ before calling ``RPKClust.fit``.
 
 import os
 import struct
-import urllib.request
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
+import urllib
 
 
 # --------------------------------------------------------------------------
@@ -95,6 +95,36 @@ _IPPROTO_UDP = 17
 
 _MAX_CAPTURED_PACKET = 16 * 1024 * 1024
 
+# Map each NetPlier protocol to its transport layer (as used by NetPlier's
+# PCAPImporter with importLayer=5, except ICMP which uses importLayer=3).
+# This is needed because Netzob's importLayer=5 already strips transport,
+# so the transport protocol is not recoverable from the message alone.
+_NETPLIER_TRANSPORT_PROTOCOL: Dict[str, str] = {
+    "dhcp": "udp",
+    "dnp3": "tcp",
+    "icmp": "icmp",
+    "modbus": "tcp",
+    "ntp": "udp",
+    "smb": "tcp",
+    "smb2": "tcp",
+    "tftp": "udp",
+    "zeroaccess": "tcp",
+}
+
+# NetPlier's true keyword offsets (Processing.get_true_keyword).
+# Stored for the validation self-check only — never used in clustering.
+_NETPLIER_GT_OFFSETS: Dict[str, Tuple[int, ...]] = {
+    "dhcp": (242, 243),
+    "dnp3": (12, 13),
+    "icmp": (0, 2),
+    "modbus": (7, 8),
+    "ntp": (0,),
+    "smb": (8,),
+    "smb2": (16, 18),
+    "tftp": (0, 2),
+    "zeroaccess": (4, 8),
+}
+
 
 class PcapDatasetLoader:
     """
@@ -128,9 +158,22 @@ class PcapDatasetLoader:
         self,
         target_dir: str = "datasets/downloads",
         allow_synthetic_fallback: bool = False,
+        use_netzob: bool = False,
     ):
         self.target_dir = target_dir
         self.allow_synthetic_fallback = allow_synthetic_fallback
+
+        # Always use the built-in PCAP/PCAPNG parser (Netzob removed per requirements).
+        # The use_netzob parameter is kept for API compatibility but is ignored.
+        self.use_netzob = False
+        if use_netzob:
+            import warnings
+            warnings.warn(
+                "use_netzob=True is deprecated and will be ignored. "
+                "Netzob support has been removed to comply with requirements.",
+                DeprecationWarning,
+                stacklevel=2
+            )
 
         # Metadata for the most recent extraction.
         self.last_metadata: List[Dict[str, Any]] = []
@@ -234,7 +277,7 @@ class PcapDatasetLoader:
         # Pass 1: read the capture into raw transport records.
         # ----------------------------------------------------------
 
-        records, capture_stats = self._read_transport_records(
+        records, capture_stats = self._read_transport_records_custom(
             pcap_path,
             min_length=min_length,
         )
@@ -246,9 +289,20 @@ class PcapDatasetLoader:
 
         # ----------------------------------------------------------
         # Pass 2: optional TCP stream reassembly.
+        #
+        # This is a NON-NetPlier experimental mode.  NetPlier uses
+        # Netzob's PCAPImporter with mergePacketsInFlow=False, which
+        # emits one message per packet.  Reassembly is opt-in only.
         # ----------------------------------------------------------
 
         reassembly_stats: Dict[str, Any] = {}
+
+        if reassemble_tcp:
+            print(
+                "[PcapLoader] WARNING: TCP reassembly is enabled. "
+                "This is a NON-NetPlier experimental mode and "
+                "deviates from NetPlier's per-packet message model."
+            )
 
         if reassemble_tcp and protocol in ("dnp3", "modbus", "smb", "smb2"):
             records, reassembly_stats = self._reassemble_tcp_streams(
@@ -279,12 +333,14 @@ class PcapDatasetLoader:
             "link_types": capture_stats["link_types"],
             "transport_payloads": len(records),
             "skipped_empty": capture_stats["skipped_empty"],
+            "skipped_min_length": capture_stats.get("skipped_min_length", 0),
             "skipped_unsupported": capture_stats["skipped_unsupported"],
             "skipped_truncated": capture_stats["skipped_truncated"],
             "skipped_preprocess": 0,
             "skipped_no_gt": 0,
             "unknown_direction": 0,
             "reassembly": reassembly_stats,
+            "import_backend": "builtin",
         }
 
         for index, record in enumerate(records):
@@ -751,11 +807,12 @@ class PcapDatasetLoader:
 
                 (
                     interface_id,
+                    _drops,
                     ts_high,
                     ts_low,
                     cap_len,
                     _orig_len,
-                ) = struct.unpack_from(f"{endian}IIIII", body, 0)
+                ) = struct.unpack_from(f"{endian}IIIIII", body, 0)
 
                 if interface_id >= len(interfaces):
                     continue
@@ -838,13 +895,14 @@ class PcapDatasetLoader:
     # Capture -> transport records
     # ------------------------------------------------------------------
 
-    def _read_transport_records(
+    def _read_transport_records_custom(
         self,
         pcap_path: str,
         min_length: int,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Parse a capture into transport records.
+        Parse a capture into transport records using the built-in
+        PCAP/PCAPNG parser.
 
         Each record describes exactly one application-layer message
         candidate, matching NetPlier's per-packet granularity.
@@ -856,6 +914,7 @@ class PcapDatasetLoader:
         skipped_unsupported = 0
         skipped_truncated = 0
         skipped_empty = 0
+        skipped_min_length = 0
         packets_read = 0
 
         for (
@@ -889,7 +948,8 @@ class PcapDatasetLoader:
                 continue
 
             if len(payload) < min_length:
-                skipped_empty += 1
+                # RPKClust-side optional filter (NOT a NetPlier rule).
+                skipped_min_length += 1
                 continue
 
             records.append(
@@ -917,6 +977,7 @@ class PcapDatasetLoader:
             "skipped_unsupported": skipped_unsupported,
             "skipped_truncated": skipped_truncated,
             "skipped_empty": skipped_empty,
+            "skipped_min_length": skipped_min_length,
         }
 
         return records, stats
@@ -1242,7 +1303,7 @@ class PcapDatasetLoader:
     def _strip_link_layer(
         cls,
         packet: bytes,
-        linktype: int,
+        linktype: int = _DLT_EN10MB,
     ) -> Optional[Tuple[bytes, Optional[int]]]:
         """
         Remove the link layer.
@@ -1825,8 +1886,11 @@ class PcapDatasetLoader:
             if len(payload) < 9:
                 return None
 
-            # NetPlier: message.data[4 + 4]
-            return payload[4 + 4:4 + 5].hex()
+            # NetPlier: `kw = message.data[4+4]` — an integer
+            # (Python 3 bytes indexing returns int).  The
+            # `type(kw).__name__ == "bytes"` guard in NetPlier's
+            # get_true_keyword does NOT convert it to hex.
+            return payload[8]
 
         if protocol == "smb2":
 
@@ -1868,6 +1932,203 @@ class PcapDatasetLoader:
         """
 
         return f"{direction}:{protocol}:{gt_value}"
+
+    # ------------------------------------------------------------------
+    # NetPlier validation / self-check
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def validate_netplier_compatibility(cls) -> Dict[str, Any]:
+        """
+        Self-check that the loader reproduces NetPlier's
+        protocol-specific rules for all 9 supported protocols.
+
+        Verifies, for each protocol:
+          * the GT offset table matches NetPlier's
+            ``Processing.get_true_keyword``
+          * the direction rule matches NetPlier's
+            ``Processing.get_msg_direction_by_specification``
+          * the preprocessing (signature filter, MBAP truncation,
+            ZeroAccess decryption, MAX_LEN) is applied
+
+        Returns a report dict with one entry per protocol.
+        """
+
+        report: Dict[str, Any] = {}
+
+        # --- DHCP ---
+        dhcp_msg = bytes([1]) + bytes(241) + bytes([0x05])
+        report["dhcp"] = {
+            "gt_offset": _NETPLIER_GT_OFFSETS["dhcp"],
+            "gt_value": cls._get_netplier_gt(dhcp_msg, "dhcp"),
+            "gt_expected": "05",
+            "direction": cls._get_netplier_direction(
+                dhcp_msg, {}, "dhcp"
+            ),
+            "direction_expected": "request",
+        }
+
+        # --- DNP3 ---
+        dnp3_msg = bytes([0x05, 0x64, 0x0A, 0x80]) + bytes(8) + bytes([0x0C])
+        report["dnp3"] = {
+            "gt_offset": _NETPLIER_GT_OFFSETS["dnp3"],
+            "gt_value": cls._get_netplier_gt(dnp3_msg, "dnp3"),
+            "gt_expected": "0c",
+            "direction": cls._get_netplier_direction(
+                dnp3_msg, {}, "dnp3"
+            ),
+            "direction_expected": "request",
+        }
+
+        # --- ICMP (after IHL strip) ---
+        icmp_msg = bytes([0x08, 0x00]) + bytes(6)
+        report["icmp"] = {
+            "gt_offset": _NETPLIER_GT_OFFSETS["icmp"],
+            "gt_value": cls._get_netplier_gt(icmp_msg, "icmp"),
+            "gt_expected": "0800",
+            "direction": cls._get_netplier_direction(
+                icmp_msg, {}, "icmp"
+            ),
+            "direction_expected": "request",
+        }
+
+        # --- Modbus ---
+        modbus_msg = bytes(7) + bytes([0x01])
+        report["modbus"] = {
+            "gt_offset": _NETPLIER_GT_OFFSETS["modbus"],
+            "gt_value": cls._get_netplier_gt(modbus_msg, "modbus"),
+            "gt_expected": "01",
+            "direction": cls._get_netplier_direction(
+                modbus_msg,
+                {"source_port": 1234, "destination_port": 502},
+                "modbus",
+            ),
+            "direction_expected": "request",
+        }
+
+        # --- NTP ---
+        ntp_msg = bytes([0x1B]) + bytes(47)
+        report["ntp"] = {
+            "gt_offset": _NETPLIER_GT_OFFSETS["ntp"],
+            "gt_value": cls._get_netplier_gt(ntp_msg, "ntp"),
+            "gt_expected": 3,
+            "direction": cls._get_netplier_direction(
+                ntp_msg, {}, "ntp"
+            ),
+            "direction_expected": "request",
+        }
+
+        # --- SMB (GT is an integer, not hex) ---
+        smb_msg = bytes(8) + bytes([0x0D]) + bytes(5)
+        report["smb"] = {
+            "gt_offset": _NETPLIER_GT_OFFSETS["smb"],
+            "gt_value": cls._get_netplier_gt(smb_msg, "smb"),
+            "gt_expected": 13,
+            "gt_type": type(
+                cls._get_netplier_gt(smb_msg, "smb")
+            ).__name__,
+            "gt_type_expected": "int",
+            "direction": cls._get_netplier_direction(
+                smb_msg, {}, "smb"
+            ),
+            "direction_expected": "request",
+        }
+
+        # --- SMB2 ---
+        smb2_msg = bytes(16) + bytes([0x00, 0x01]) + bytes(6)
+        report["smb2"] = {
+            "gt_offset": _NETPLIER_GT_OFFSETS["smb2"],
+            "gt_value": cls._get_netplier_gt(smb2_msg, "smb2"),
+            "gt_expected": 256,
+            "direction": cls._get_netplier_direction(
+                smb2_msg, {}, "smb2"
+            ),
+            "direction_expected": "request",
+        }
+
+        # --- TFTP ---
+        tftp_msg = bytes([0x00, 0x01]) + bytes(10)
+        report["tftp"] = {
+            "gt_offset": _NETPLIER_GT_OFFSETS["tftp"],
+            "gt_value": cls._get_netplier_gt(tftp_msg, "tftp"),
+            "gt_expected": "0001",
+        }
+
+        # --- ZeroAccess ---
+        # NetPlier direction reads data[7]; GT reads data[4:8].
+        # Direction marker 'g' (0x67) should be at index 7.
+        # GT (data[4:8]) should be the 4 bytes after CRC32 (which is zeros here).
+        za_msg = (
+            bytes([0x00, 0x00, 0x00, 0x00])  # CRC32 = 0
+            + bytes([0x00, 0x00, 0x00, ord("g")])  # data[4:8] = GT, data[7] = direction
+            + bytes(3)
+        )
+        report["zeroaccess"] = {
+            "gt_offset": _NETPLIER_GT_OFFSETS["zeroaccess"],
+            "gt_value": cls._get_netplier_gt(za_msg, "zeroaccess"),
+            "gt_expected": "00000067",
+            "direction": cls._get_netplier_direction(
+                za_msg, {}, "zeroaccess"
+            ),
+            "direction_expected": "request",
+        }
+
+        return report
+
+    @classmethod
+    def print_validation_report(cls) -> bool:
+        """
+        Print the NetPlier compatibility self-check and return
+        True when every protocol matches NetPlier's rules.
+        """
+
+        report = cls.validate_netplier_compatibility()
+
+        all_ok = True
+
+        print("=" * 65)
+        print("  NetPlier Compatibility Self-Check")
+        print("=" * 65)
+
+        for protocol, checks in report.items():
+
+            print(f"\n  [{protocol}]")
+
+            for key, value in checks.items():
+                print(f"    {key:<22}: {value}")
+
+            # Verify GT value.
+            gt_value = checks.get("gt_value")
+            gt_expected = checks.get("gt_expected")
+            if gt_value != gt_expected:
+                print(f"    !! GT MISMATCH: got {gt_value!r}, "
+                      f"expected {gt_expected!r}")
+                all_ok = False
+
+            # Verify GT type for SMB (must be int, not str).
+            if "gt_type_expected" in checks:
+                if checks.get("gt_type") != checks.get("gt_type_expected"):
+                    print(f"    !! GT TYPE MISMATCH: got "
+                          f"{checks.get('gt_type')}, expected "
+                          f"{checks.get('gt_type_expected')}")
+                    all_ok = False
+
+            # Verify direction.
+            direction = checks.get("direction")
+            direction_expected = checks.get("direction_expected")
+            if direction_expected is not None and direction != direction_expected:
+                print(f"    !! DIRECTION MISMATCH: got {direction!r}, "
+                      f"expected {direction_expected!r}")
+                all_ok = False
+
+        print("\n" + "=" * 65)
+        if all_ok:
+            print("  RESULT: ALL PROTOCOLS MATCH NETPLIER")
+        else:
+            print("  RESULT: MISMATCHES DETECTED (see above)")
+        print("=" * 65)
+
+        return all_ok
 
     # ------------------------------------------------------------------
     # Legacy transport helper

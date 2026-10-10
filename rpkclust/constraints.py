@@ -1,5 +1,3 @@
-
-
 import numpy as np
 import warnings
 from typing import List, Dict, Any, Optional, Tuple
@@ -13,6 +11,14 @@ class ClusteringConstraints:
     # some harnesses use the client/server role naming.
     CLIENT_LABELS = ("client", "request")
     SERVER_LABELS = ("server", "response")
+
+    # Number of server-label shuffles used for the chance baseline in
+    # remote_coupling.
+    COUPLING_PERMUTATIONS = 20
+
+    # k/n at which dimensional_constraint is fully penalized (the old
+    # step function's threshold, now an end point instead of a pass mark).
+    DIM_DISTINCT_LIMIT = 0.5
 
     # ==============================================================
     #  1. Message Similarity Constraint
@@ -195,27 +201,50 @@ class ClusteringConstraints:
         if not pairs:
             return 0.5
 
-        client_cluster_pairs: Dict[int, List[int]] = defaultdict(list)
+        # ---- Chance-corrected request->response cluster purity ----
+        # The raw "dominant server cluster" ratio is 1.0 for singleton
+        # clusters and for any field that is a pure function of direction
+        # (e.g. DHCP op byte), so it rewards over-segmentation and
+        # direction proxies.  Only client clusters holding >= 2 pairs carry
+        # evidence; for those we subtract the purity expected when the
+        # server-side labels are shuffled (fixed seed -> deterministic) and
+        # rescale, so chance level maps to the neutral value 0.5.  The
+        # result is shrunk towards 0.5 by the share of pairs that sit in
+        # informative clusters.
+        c_lab = np.array([int(labels[ci]) for ci, _ in pairs])
+        s_lab = np.array([int(labels[si]) for _, si in pairs])
 
-        for ci, si in pairs:
-            client_cluster_pairs[int(labels[ci])].append(int(labels[si]))
+        uniq, cnts = np.unique(c_lab, return_counts=True)
+        informative = set(uniq[cnts >= 2].tolist())
+        keep = np.array([c in informative for c in c_lab])
+        coverage = float(keep.sum()) / len(c_lab)
+        if coverage == 0.0:
+            return 0.5
+        c_lab, s_lab = c_lab[keep], s_lab[keep]
 
-        cluster_correspondence_scores: List[float] = []
+        def _weighted_purity(c_arr: np.ndarray, s_arr: np.ndarray) -> float:
+            total = 0
+            for c in np.unique(c_arr):
+                _, counts = np.unique(s_arr[c_arr == c], return_counts=True)
+                total += counts.max()
+            return total / len(c_arr)
 
-        for c_cluster, s_clusters in client_cluster_pairs.items():
-            if not s_clusters:
-                continue
-            # Find dominant server cluster.
-            s_counts: Dict[int, int] = defaultdict(int)
-            for sc in s_clusters:
-                s_counts[sc] += 1
-            dominant_ratio = max(s_counts.values()) / len(s_clusters)
-            cluster_correspondence_scores.append(dominant_ratio)
+        observed = _weighted_purity(c_lab, s_lab)
+        rng = np.random.default_rng(0)
+        baseline = float(np.mean([
+            _weighted_purity(c_lab, rng.permutation(s_lab))
+            for _ in range(ClusteringConstraints.COUPLING_PERMUTATIONS)
+        ]))
 
-        if not cluster_correspondence_scores:
+        if baseline >= 1.0 - 1e-9:
+            # Chance already yields perfect purity (e.g. one server
+            # cluster, which is what a direction-proxy field produces).
             return 0.5
 
-        return float(np.mean(cluster_correspondence_scores))
+        corrected = (observed - baseline) / (1.0 - baseline)  # in [-inf, 1]
+        corrected = float(np.clip(corrected, -1.0, 1.0))
+        p = 0.5 + 0.5 * corrected
+        return float(np.clip(coverage * p + (1.0 - coverage) * 0.5, 0.0, 1.0))
 
     @staticmethod
     def structural_consistency(
@@ -298,11 +327,22 @@ class ClusteringConstraints:
                 consistency = 0.4 * len_score + 0.6 * byte_agreement
                 cluster_scores.append(consistency)
 
+            # Singleton clusters carry no consistency evidence.  Without a
+            # correction, an over-segmented partition is scored only on its
+            # few multi-message clusters (or on `presence` alone), which
+            # rewards near-unique fields.  Shrink towards neutral (0.5) in
+            # proportion to the share of messages that sit in singletons.
+            n_in_multi = sum(
+                len(idx) for idx in clusters.values() if len(idx) >= 2
+            )
+            coverage = n_in_multi / n_total
+
             if not cluster_scores:
-                return float(presence * 0.5)
+                return 0.5
 
             avg_consistency = float(np.mean(cluster_scores))
             p_s = 0.2 * presence + 0.8 * avg_consistency
+            p_s = coverage * p_s + (1.0 - coverage) * 0.5
 
         else:
             # ---- Fallback: candidate-only checks (NOT paper-accurate) ----
@@ -387,11 +427,14 @@ class ClusteringConstraints:
             1 for size in cluster_sizes.values() if size == 1
         )
 
-        t_value = 0.5
-        t_single = 0.5
         r_single = single_message_clusters / k if k > 0 else 1.0
 
-        if r_distinct_value <= t_value and r_single <= t_single:
-            return 0.95
-        else:
-            return 0.1
+        # Graded replacement for the old 0.95 / 0.1 step function (which
+        # passed any partition with k/n <= 0.5, e.g. a Modbus transaction
+        # ID shared by request/response pairs, or DHCP xid bytes).  Same end
+        # points (0.95 when both ratios are ~0, 0.1 when fully penalized),
+        # but k/n = DIM_DISTINCT_LIMIT (0.5) is now fully penalized and the
+        # penalty grows quadratically towards it.
+        d = min(1.0, r_distinct_value / ClusteringConstraints.DIM_DISTINCT_LIMIT)
+        penalty = max(d * d, r_single)
+        return float(0.95 - 0.85 * min(1.0, penalty))

@@ -29,7 +29,24 @@ def _val_to_int(v) -> int:
 #  Two-Stage Bayesian Inference Model
 # ------------------------------------------------------------------
 
+def _logit(p: float, eps: float = 1e-12) -> float:
+    p = min(max(float(p), eps), 1.0 - eps)
+    return float(np.log(p) - np.log1p(-p))
+
+
+def _sigmoid(z: float) -> float:
+    if z >= 0:
+        return float(1.0 / (1.0 + np.exp(-z)))
+    e = np.exp(z)
+    return float(e / (1.0 + e))
+
+
 class RPKClustOptimizer:
+
+    # Constraint probabilities are clipped to this range before fusion so
+    # that no single constraint (e.g. a saturated remote_coupling = 1.0)
+    # can contribute odds of 1e6 and drown out the others.
+    CONSTRAINT_CLIP = (0.05, 0.95)
 
     def compute_stage1_probability(
         self,
@@ -69,9 +86,11 @@ class RPKClustOptimizer:
             "dimensional_constraint": float(c4),
         }
 
-        p_f = self._constraint_bayesian_update(
-            c1, c2, c3, c4, prior=prior,
-        )
+        log_odds = self._constraint_log_odds(c1, c2, c3, c4, prior=prior)
+        # Unsaturated Stage-1 score; ranking uses this, not the clipped
+        # probability (which sits at the clip ceiling for most candidates).
+        candidate["stage1_log_odds"] = log_odds
+        p_f = float(np.clip(_sigmoid(log_odds), 1e-6, 1.0 - 1e-6))
 
         return p_f, constraint_values
 
@@ -92,7 +111,10 @@ class RPKClustOptimizer:
             )
             scored.append((candidate, p_f, constraints))
 
-        scored.sort(key=lambda t: t[1], reverse=True)
+        scored.sort(
+            key=lambda t: (t[0].get("stage1_log_odds", _logit(t[1])), t[1]),
+            reverse=True,
+        )
         return scored
 
     def cluster_by_candidate(self, values: List[Any]) -> np.ndarray:
@@ -114,6 +136,24 @@ class RPKClustOptimizer:
 
         return np.array(labels)
 
+    def _constraint_log_odds(
+        self,
+        c1: float,
+        c2: float,
+        c3: float,
+        c4: float,
+        prior: float = 0.1,
+    ) -> float:
+        """Naive-Bayes log-odds of K=1 from the four clustering constraints."""
+        if not np.isfinite(prior) or not 0.0 < prior < 1.0:
+            raise ValueError("prior not valid")
+        lo, hi = self.CONSTRAINT_CLIP
+        cs = np.clip(np.array([c1, c2, c3, c4], dtype=float), lo, hi)
+        return float(
+            np.sum(np.log(cs) - np.log1p(-cs))
+            + (np.log(prior) - np.log1p(-prior))
+        )
+
     def _constraint_bayesian_update(
         self,
         c1: float,
@@ -125,7 +165,7 @@ class RPKClustOptimizer:
         if not np.isfinite(prior) or not 0.0 < prior < 1.0:
             raise ValueError("prior not valid")
         constraints = np.array([c1, c2, c3, c4], dtype=float)
-        constraints = np.clip(constraints, 1e-6, 1 - 1e-6)
+        constraints = np.clip(constraints, *self.CONSTRAINT_CLIP)
 
         likelihood_keyword = float(np.prod(constraints))
         likelihood_not_keyword = float(np.prod(1.0 - constraints))
@@ -230,6 +270,35 @@ class RPKClustOptimizer:
             return 0.60
         raise ValueError("candidate_type must be 'FOR' or 'NFOR'")
 
+    def final_log_odds(
+        self, p_bit: float, p_offset: float, stage1_log_odds: float
+    ) -> float:
+        """
+        Log-odds form of Eq. (15):  log(M/N) =
+            logit(p_bit) + logit(p_offset) + logit(p_f).
+        Unclipped, so candidates are never tied at a probability ceiling.
+        """
+        return _logit(p_bit) + _logit(p_offset) + float(stage1_log_odds)
+
+    def score_candidate(
+        self, candidate: Dict[str, Any], p_f: float, boundary_B: int = 0
+    ) -> Dict[str, float]:
+        """Stage-2 scoring shared by fit() and infer_keyword()."""
+        p_bit = self.compute_p_bit(candidate["values"])
+        p_offset = self.compute_p_offset(
+            candidate.get("type", "FOR"),
+            candidate.get("offset", 0),
+            boundary_B or candidate.get("boundary_B", 0),
+        )
+        s1 = candidate.get("stage1_log_odds", _logit(p_f))
+        score = self.final_log_odds(p_bit, p_offset, s1)
+        return {
+            "p_bit": p_bit,
+            "p_offset": p_offset,
+            "score": score,
+            "prob": _sigmoid(score),
+        }
+
     def bayesian_update(self, p_bit: float, p_offset: float, p_f: float) -> float:
         """
         Final posterior probability P(K=1 | p_bit, p_offset) (Eq. 12–15).
@@ -312,23 +381,16 @@ class RPKClustOptimizer:
 
         # --- Stage 2: self-constraint inference ---
         all_scored: List[Tuple[Dict[str, Any], float]] = []
+        scores: Dict[int, float] = {}
 
         for candidate, p_f, _ in stage1_ranked:
-            values = candidate["values"]
+            # Paper Eq. (15): P(K=1 | p_bit, p_offset) = M / (M + N),
+            # evaluated in log-odds so ranking never ties at the clip.
+            s = self.score_candidate(candidate, p_f)
+            scores[id(candidate)] = s["score"]
+            all_scored.append((candidate, s["prob"]))
 
-            p_bit = self.compute_p_bit(values)
-
-            cand_type = candidate.get("type", "FOR")
-            cand_offset = candidate.get("offset", 0)
-            boundary_B = candidate.get("boundary_B", 0)
-            p_offset = self.compute_p_offset(cand_type, cand_offset, boundary_B)
-
-            # Paper Eq. (15): P(K=1 | p_bit, p_offset) = M / (M + N)
-            final_prob = self.bayesian_update(p_bit, p_offset, p_f)
-
-            all_scored.append((candidate, final_prob))
-
-        all_scored.sort(key=lambda t: t[1], reverse=True)
+        all_scored.sort(key=lambda t: scores[id(t[0])], reverse=True)
 
         if not all_scored:
             return None, 0.0, []
