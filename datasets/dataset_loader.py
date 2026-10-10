@@ -1,37 +1,4 @@
-"""
-Dataset loader for evaluating packet-clustering algorithms against
-NetPlier-compatible ground truth.
 
-The loader:
-  1. Reads classic PCAP *and* PCAPNG captures.
-  2. Parses Ethernet/IPv4 TCP, UDP and ICMP.
-  3. Applies the protocol-specific preprocessing used by NetPlier
-      (``netplier/processing.py``, Netzob 1.0.2, ``importLayer=5``).
-  4. Computes NetPlier-compatible direction.
-  5. Computes NetPlier-compatible ground-truth message labels.
-
-Message-granularity contract
-----------------------------
-NetPlier imports traces with::
-
-    PCAPImporter.readFile(filePath=..., importLayer=5)   # layer 3 for ICMP
-
-Netzob 1.0.2 (the version pinned by NetPlier) emits **one message per
-TCP/UDP packet payload**; ``mergePacketsInFlow`` defaults to ``False``
-and no stream reassembly or protocol framing is performed.  This loader
-therefore reproduces that granularity exactly, because the ground-truth
-byte offsets below are only meaningful on NetPlier's message set.
-
-Guide item 9 (TCP reassembly) is consequently *not* applied by default.
-It is available as an opt-in, off-by-default experiment so the deviation
-can be measured rather than assumed.  See ``reassemble_tcp``.
-
-IMPORTANT:
-The returned ``y`` values (and the ``gt_*`` metadata keys) are ONLY
-evaluation ground truth.  They must never be supplied as input features
-to RPKClust.  ``main.py`` projects metadata through an allow-list
-before calling ``RPKClust.fit``.
-"""
 
 import os
 import struct
@@ -2193,3 +2160,225 @@ class PcapDatasetLoader:
             payloads,
             np.asarray(labels, dtype=int),
         )
+
+
+# =========================================================================
+# CNNPRE CSV Dataset Loader
+# =========================================================================
+
+class CNNPRECSVDatasetLoader:
+    """
+    Load CNNPRE pre-processed CSV datasets for evaluation.
+
+    CNNPRE CSV format (from CNNPRE/Data/*.csv):
+        direction,type,hex,Full
+
+    - direction: 0=request, 1=response (or similar)
+    - type: ground-truth message type label (string)
+    - hex: packet payload in hex string format
+    - Full: full packet representation (not used)
+
+    This loader provides the same API as PcapDatasetLoader for compatibility.
+    """
+
+    # Available CNNPRE datasets (filename -> protocol name)
+    CNNPRE_DATASETS = {
+        "DHCP921-hex.csv": "dhcp",
+        "DNP31275-hex.csv": "dnp3",
+        "ICMP3231-hex.csv": "icmp",
+        "MODBUS1043-hex.csv": "modbus",
+        "NTP1043-hex.csv": "ntp",
+        "SMB1043-hex.csv": "smb",
+        "SMB21043-hex.csv": "smb2",
+        "TFTP1043-hex.csv": "tftp",
+        "DNS4876-hex.csv": "dns",
+        "HTTP1963-hex.csv": "http",
+        "FTP1620-hex.csv": "ftp",
+        "SMTP1172-hex.csv": "smtp",
+        "POP1080-hex.csv": "pop3",
+        "NBNS2642-hex.csv": "nbns",
+        "ARP1275-hex.csv": "arp",
+        "GSM5000-hex.csv": "gsm",
+        "SYSLOG1792-hex.csv": "syslog",
+    }
+
+    def __init__(
+        self,
+        target_dir: str = "CNNPRE/Data",
+    ):
+        self.target_dir = Path(target_dir).resolve()
+
+    def _load_csv(
+        self,
+        csv_path: Path,
+        protocol: str,
+        max_samples: Optional[int] = None,
+    ) -> Tuple[List[bytes], np.ndarray, List[Dict[str, Any]]]:
+        """
+        Load a CNNPRE CSV file.
+
+        Returns:
+            payloads: List of message payloads as bytes
+            labels: Integer-encoded ground truth labels
+            metadata: List of metadata dicts with direction, gt_value, etc.
+        """
+        import pandas as pd
+
+        df = pd.read_csv(csv_path, dtype=str)
+
+        # Expected columns: direction, type, hex, Full
+        if "hex" not in df.columns or "type" not in df.columns:
+            raise ValueError(
+                f"CSV {csv_path} missing required columns 'hex' and/or 'type'. "
+                f"Found columns: {list(df.columns)}"
+            )
+
+        if max_samples and len(df) > max_samples:
+            df = df.head(max_samples)
+
+        payloads: List[bytes] = []
+        gt_labels: List[str] = []
+        metadata: List[Dict[str, Any]] = []
+
+        for idx, row in df.iterrows():
+            hex_str = row["hex"]
+            gt_type = row["type"]
+
+            # Convert hex string to bytes
+            try:
+                payload = bytes.fromhex(hex_str)
+            except ValueError:
+                # Skip invalid hex
+                continue
+
+            # Apply 500-byte max length (NetPlier compatibility)
+            if len(payload) > 500:
+                payload = payload[:500]
+
+            # Direction: 0=request, 1=response (from CNNPRE format)
+            direction_val = row.get("direction", "0")
+            try:
+                direction = "request" if str(direction_val) == "0" else "response"
+            except Exception:
+                direction = "unknown"
+
+            # GT label format: direction:protocol:gt_value
+            gt_label = f"{direction}:{protocol}:{gt_type}"
+
+            payloads.append(payload)
+            gt_labels.append(gt_label)
+            metadata.append({
+                "packet_index": idx,
+                "timestamp": float(idx),  # Sequential index as pseudo-timestamp
+                "protocol": protocol,
+                "transport": "unknown",  # Not available in CSV
+                "direction": direction,
+                "gt_value": gt_type,
+                "gt_label": gt_label,
+                "source_ip": "unknown",
+                "source_port": None,
+                "destination_ip": "unknown",
+                "destination_port": None,
+                "session_id": f"{protocol}:csv-{idx}",
+                "payload_length": len(payload),
+                "gt_source": "CNNPRE",
+            })
+
+        # Integer encode labels
+        label_to_id = {label: i for i, label in enumerate(sorted(set(gt_labels)))}
+        labels = np.array([label_to_id[l] for l in gt_labels], dtype=int)
+
+        return payloads, labels, metadata
+
+    def extract_payloads_with_metadata(
+        self,
+        csv_path: str,
+        protocol: str,
+        min_length: int = 1,
+        max_samples: Optional[int] = None,
+    ) -> Tuple[List[bytes], np.ndarray, List[Dict[str, Any]]]:
+        """
+        Extract payloads and metadata from CNNPRE CSV.
+
+        Parameters
+        ----------
+        csv_path: Path to CSV file (relative to target_dir or absolute)
+        protocol: Protocol name (e.g., 'dhcp', 'dns', 'http')
+        min_length: Minimum payload length (filters after loading)
+        max_samples: Optional limit on number of samples to load
+
+        Returns
+        -------
+        payloads, labels, metadata
+        """
+        path = Path(csv_path)
+        if not path.is_absolute():
+            path = self.target_dir / path
+
+        if not path.exists():
+            raise FileNotFoundError(f"CSV dataset not found: {path}")
+
+        payloads, labels, metadata = self._load_csv(path, protocol, max_samples)
+
+        # Apply min_length filter
+        if min_length > 1:
+            filtered = [
+                (p, l, m) for p, l, m in zip(payloads, labels, metadata)
+                if len(p) >= min_length
+            ]
+            if filtered:
+                payloads, labels, metadata = zip(*filtered)
+                payloads = list(payloads)
+                labels = np.array(labels)
+                metadata = list(metadata)
+            else:
+                payloads, labels, metadata = [], np.array([], dtype=int), []
+
+        return payloads, labels, metadata
+
+    def extract_folder_dataset(
+        self,
+        folder_path: str,
+        protocol: str,
+        min_length: int = 1,
+        max_samples: Optional[int] = None,
+    ):
+        """
+        Load all CSVs in a directory matching the protocol.
+
+        Note: CNNPRE uses one CSV per dataset, so this just calls extract_payloads_with_metadata
+        for the matching file.
+        """
+        folder = Path(folder_path)
+        if not folder.exists():
+            raise FileNotFoundError(folder)
+
+        # Find CSV for this protocol
+        csv_files = list(folder.glob(f"*{protocol}*-hex.csv"))
+        if not csv_files:
+            # Try exact match
+            for fname, proto in self.CNNPRE_DATASETS.items():
+                if proto == protocol:
+                    csv_files = [folder / fname]
+                    break
+
+        if not csv_files:
+            raise RuntimeError(f"No CSV dataset found for protocol {protocol} in {folder}")
+
+        all_payloads: List[bytes] = []
+        all_labels: List[int] = []
+        all_metadata: List[Dict[str, Any]] = []
+
+        for csv_file in csv_files:
+            payloads, labels, metadata = self.extract_payloads_with_metadata(
+                str(csv_file), protocol, min_length, max_samples
+            )
+            all_payloads.extend(payloads)
+            all_labels.extend(labels)
+            all_metadata.extend(metadata)
+
+        return all_payloads, np.array(all_labels, dtype=int), all_metadata
+
+
+# Export both loaders
+__all__ = ["PcapDatasetLoader", "CNNPRECSVDatasetLoader"]

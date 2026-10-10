@@ -1,17 +1,19 @@
 import os
 import sys
 import traceback
+import argparse
 from pathlib import Path
+from typing import Optional
 
 # Allow importing local project modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from datasets import PcapDatasetLoader
+from datasets import PcapDatasetLoader, CNNPRECSVDatasetLoader
 from temp_evaluator import RPKClustEvaluator
 
 
 # ---------------------------------------------------------------------------
-# NetPlier benchmark datasets
+# NetPlier benchmark datasets (PCAP)
 # ---------------------------------------------------------------------------
 #
 # The directory contains:
@@ -41,6 +43,36 @@ NETPLIER_DATASETS = {
     "smb_100.pcap": "smb",
     "smb2_100.pcap": "smb2",
     "tftp_100.pcap": "tftp",
+}
+
+
+# ---------------------------------------------------------------------------
+# CNNPRE benchmark datasets (CSV)
+# ---------------------------------------------------------------------------
+#
+# Pre-processed CSV datasets from CNNPRE project.
+# Each CSV contains: direction, type, hex, Full
+# - type is the ground-truth message type
+# - hex is the packet payload in hex format
+# - direction: 0=request, 1=response
+#
+# These are mapped by filename to protocol names.
+# Available files in CNNPRE/Data/:
+# ---------------------------------------------------------------------------
+
+CNNPRE_DATASETS = {
+    "DHCP921-hex.csv": "dhcp",
+    "ICMP3231-hex.csv": "icmp",
+    "NTP1043-hex.csv": "ntp",
+    "DNS4876-hex.csv": "dns",
+    "HTTP1963-hex.csv": "http",
+    "FTP1620-hex.csv": "ftp",
+    "SMTP1172-hex.csv": "smtp",
+    "POP1080-hex.csv": "pop3",
+    "NBNS2642-hex.csv": "nbns",
+    "ARP1275-hex.csv": "arp",
+    "GSM5000-hex.csv": "gsm",
+    "SYSLOG1792-hex.csv": "syslog",
 }
 
 
@@ -139,23 +171,22 @@ def print_dataset_diagnostics(
     print(f"  EXTRACTION DIAGNOSTICS: {protocol}")
     print("-" * 65)
     print(f"  protocol                     : {protocol}")
-    print(f"  packets read                 : {stats.get('packets_read')}")
-    print(f"  link types                   : {stats.get('link_types')}")
-    print(f"  transport payloads           : {stats.get('transport_payloads')}")
+    if stats:
+        print(f"  packets read                 : {stats.get('packets_read', 'N/A (CSV)')}")
+        print(f"  link types                   : {stats.get('link_types', 'N/A (CSV)')}")
+        print(f"  transport payloads           : {stats.get('transport_payloads', 'N/A (CSV)')}")
+        print(f"  skipped empty/short          : {stats.get('skipped_empty', 'N/A (CSV)')}")
+        print(f"  skipped unsupported          : {stats.get('skipped_unsupported', 'N/A (CSV)')}")
+        print(f"  skipped truncated            : {stats.get('skipped_truncated', 'N/A (CSV)')}")
+        print(f"  skipped by preprocessing     : {stats.get('skipped_preprocess', 'N/A (CSV)')}")
+        print(f"  skipped (no GT available)    : {stats.get('skipped_no_gt', 'N/A (CSV)')}")
+
     print(f"  extracted messages           : {len(X)}")
     print(f"  requests                     : {directions.get('request', 0)}")
     print(f"  responses                    : {directions.get('response', 0)}")
     print(f"  unknown directions           : {directions.get('unknown', 0)}")
     print(f"  unique GT values             : {len(gt_values)}")
     print(f"  GT classes (label space)     : {len(set(y)) if y is not None else 0}")
-    print(f"  skipped empty/short          : {stats.get('skipped_empty')}")
-    print(f"  skipped unsupported          : {stats.get('skipped_unsupported')}")
-    print(f"  skipped truncated            : {stats.get('skipped_truncated')}")
-    print(f"  skipped by preprocessing     : {stats.get('skipped_preprocess')}")
-    print(f"  skipped (no GT available)    : {stats.get('skipped_no_gt')}")
-
-    if stats.get("reassembly"):
-        print(f"  TCP reassembly               : {stats['reassembly']}")
 
     if len(X) > 1:
         lengths = sorted(len(message) for message in X)
@@ -170,39 +201,50 @@ def print_dataset_diagnostics(
     print("-" * 65)
 
 
-def evaluate_pcap(
-    loader: PcapDatasetLoader,
+def evaluate_dataset(
+    loader,
     evaluator: RPKClustEvaluator,
-    pcap_file: Path,
+    dataset_file: Path,
     protocol: str,
+    source_type: str,
+    max_samples: Optional[int] = None,
 ):
     """
-    Load one NetPlier capture and evaluate RPKClust.
+    Load one dataset (PCAP or CSV) and evaluate RPKClust.
 
-    The protocol is explicitly supplied because NetPlier's ground truth
+    The protocol is explicitly supplied because ground truth
     extraction is protocol-specific.
 
     RPKClust receives the extracted messages and interaction metadata.
     The labels are used only by the evaluator.
     """
 
-    dataset_name = pcap_file.stem
+    dataset_name = dataset_file.stem
 
     print()
     print("=" * 65)
     print(f"Evaluating: {dataset_name}")
     print(f"Protocol:   {protocol}")
+    print(f"Source:     {source_type}")
     print("=" * 65)
 
-    X, y, metadata = loader.extract_payloads_with_metadata(
-        str(pcap_file),
-        protocol=protocol,
-    )
-
-    stats = dict(loader.last_stats)
+    # Load data based on loader type
+    if isinstance(loader, PcapDatasetLoader):
+        X, y, metadata = loader.extract_payloads_with_metadata(
+            str(dataset_file),
+            protocol=protocol,
+        )
+        stats = dict(loader.last_stats)
+    else:  # CNNPRECSVDatasetLoader
+        X, y, metadata = loader.extract_payloads_with_metadata(
+            str(dataset_file),
+            protocol=protocol,
+            max_samples=max_samples,
+        )
+        stats = None
 
     if not X:
-        print(f"[WARNING] No messages extracted from {pcap_file.name}")
+        print(f"[WARNING] No messages extracted from {dataset_file.name}")
         return
 
     print_dataset_diagnostics(
@@ -255,9 +297,80 @@ def evaluate_pcap(
     )
 
 
-def main():
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="RPKClust Evaluation - NetPlier and CNNPRE Datasets",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run on all NetPlier PCAP datasets (default)
+  python main.py
+
+  # Run on all CNNPRE CSV datasets
+  python main.py --source csv
+
+  # Run on specific PCAP dataset
+  python main.py --source pcap --protocol dhcp
+
+  # Run on specific CNNPRE CSV dataset
+  python main.py --source csv --protocol dhcp
+
+  # Run on CNNPRE CSV with sample limit
+  python main.py --source csv --protocol http --max-samples 1000
+        """
+    )
+    parser.add_argument(
+        "--source",
+        choices=["pcap", "csv", "both"],
+        default="pcap",
+        help="Data source: 'pcap' (NetPlier), 'csv' (CNNPRE), or 'both' (default: pcap)"
+    )
+    parser.add_argument(
+        "--protocol",
+        type=str,
+        help="Specific protocol to evaluate (e.g., dhcp, dns, http). If omitted, evaluates all available datasets for the chosen source."
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Maximum number of samples to load per CSV dataset (CNNPRE only)."
+    )
+    parser.add_argument(
+        "--list-datasets",
+        action="store_true",
+        help="List available datasets and exit."
+    )
+    return parser.parse_args()
+
+
+def list_datasets():
+    """Print available datasets for both sources."""
     print("=" * 65)
-    print("RPKClust Evaluation - NetPlier Dataset")
+    print("Available Datasets")
+    print("=" * 65)
+
+    print("\nNetPlier PCAP datasets (Implementation/datasets/downloads/):")
+    for fname, proto in NETPLIER_DATASETS.items():
+        print(f"  {proto:<10} -> {fname}")
+
+    print("\nCNNPRE CSV datasets (CNNPRE/Data/):")
+    for fname, proto in CNNPRE_DATASETS.items():
+        print(f"  {proto:<10} -> {fname}")
+
+    print()
+
+
+def main():
+    args = parse_args()
+
+    if args.list_datasets:
+        list_datasets()
+        return
+
+    print("=" * 65)
+    print(f"RPKClust Evaluation - Data Source: {args.source.upper()}")
     print("=" * 65)
 
     # ------------------------------------------------------------------
@@ -265,84 +378,89 @@ def main():
     # ------------------------------------------------------------------
 
     base_dir = Path(__file__).resolve().parent
-    downloads_dir = base_dir / "datasets" / "downloads"
     results_dir = base_dir / "results"
 
-    if not downloads_dir.exists():
-        raise FileNotFoundError(
-            f"Dataset directory does not exist:\n"
-            f"    {downloads_dir}"
-        )
-
-    # ------------------------------------------------------------------
-    # Initialize evaluator and loader
-    # ------------------------------------------------------------------
-
+    # Initialize evaluator
     evaluator = RPKClustEvaluator(
         output_dir=str(results_dir),
         fig_format="png",
         dpi=300,
     )
 
-    pcap_loader = PcapDatasetLoader(
-        target_dir=str(downloads_dir)
-    )
+    # Determine which datasets to evaluate
+    datasets_to_eval = []  # List of (loader, dataset_file, protocol, source_type)
 
-    # ------------------------------------------------------------------
-    # Find NetPlier captures
-    # ------------------------------------------------------------------
+    if args.source in ("pcap", "both"):
+        downloads_dir = base_dir / "datasets" / "downloads"
+        if downloads_dir.exists():
+            pcap_loader = PcapDatasetLoader(target_dir=str(downloads_dir))
+            for filename, protocol in NETPLIER_DATASETS.items():
+                if args.protocol and protocol != args.protocol:
+                    continue
+                pcap_file = downloads_dir / filename
+                if pcap_file.exists():
+                    datasets_to_eval.append((
+                        pcap_loader, pcap_file, protocol, "NetPlier PCAP"
+                    ))
+                else:
+                    print(f"[WARNING] Missing PCAP dataset: {pcap_file}")
 
-    pcap_files = []
+    if args.source in ("csv", "both"):
+        cnnp_dir = base_dir.parent / "CNNPRE" / "Data"
+        if cnnp_dir.exists():
+            csv_loader = CNNPRECSVDatasetLoader(target_dir=str(cnnp_dir))
+            for filename, protocol in CNNPRE_DATASETS.items():
+                if args.protocol and protocol != args.protocol:
+                    continue
+                csv_file = cnnp_dir / filename
+                if csv_file.exists():
+                    datasets_to_eval.append((
+                        csv_loader, csv_file, protocol, "CNNPRE CSV"
+                    ))
+                else:
+                    print(f"[WARNING] Missing CSV dataset: {csv_file}")
 
-    for filename, protocol in NETPLIER_DATASETS.items():
-        pcap_file = downloads_dir / filename
-
-        if not pcap_file.exists():
-            print(f"[WARNING] Missing dataset: {pcap_file}")
-            continue
-
-        pcap_files.append((pcap_file, protocol))
-
-    if not pcap_files:
+    if not datasets_to_eval:
         raise FileNotFoundError(
-            f"No NetPlier capture files were found in:\n"
-            f"    {downloads_dir}"
+            f"No datasets found for source '{args.source}' "
+            f"and protocol '{args.protocol or 'all'}'"
         )
 
     print()
-    print(f"Found {len(pcap_files)} NetPlier datasets:")
+    print(f"Found {len(datasets_to_eval)} datasets to evaluate:")
     print()
 
-    for pcap_file, protocol in pcap_files:
-        print(f"  {protocol:<10} -> {pcap_file.name}")
+    for loader, dataset_file, protocol, source_type in datasets_to_eval:
+        print(f"  {protocol:<10} -> {dataset_file.name} ({source_type})")
 
     print()
 
     # ------------------------------------------------------------------
-    # Evaluate every NetPlier dataset.
-    #
+    # Evaluate every dataset.
     # A failure on one dataset must not abort the whole benchmark.
     # ------------------------------------------------------------------
 
     failures = []
 
-    for pcap_file, protocol in pcap_files:
+    for loader, dataset_file, protocol, source_type in datasets_to_eval:
 
         try:
 
-            evaluate_pcap(
-                loader=pcap_loader,
+            evaluate_dataset(
+                loader=loader,
                 evaluator=evaluator,
-                pcap_file=pcap_file,
+                dataset_file=dataset_file,
                 protocol=protocol,
+                source_type=source_type,
+                max_samples=args.max_samples,
             )
 
         except Exception as exc:
 
-            failures.append((pcap_file.name, protocol, exc))
+            failures.append((dataset_file.name, protocol, source_type, exc))
 
             print()
-            print(f"[FAILED] {protocol} ({pcap_file.name})")
+            print(f"[FAILED] {protocol} ({dataset_file.name}, {source_type})")
             print(f"  {type(exc).__name__}: {exc}")
             traceback.print_exc()
 
@@ -364,8 +482,8 @@ def main():
         print("INCOMPLETE BENCHMARK")
         print("=" * 65)
 
-        for filename, protocol, exc in failures:
-            print(f"  {protocol:<10} {filename:<20} {exc}")
+        for filename, protocol, source_type, exc in failures:
+            print(f"  {protocol:<10} {filename:<25} {source_type:<15} {exc}")
 
         print()
 

@@ -1,7 +1,6 @@
-from .dataset_loader import PcapDatasetLoader
-from .csv_dataset_loader import CsvDatasetLoader
+from .dataset_loader import PcapDatasetLoader, CNNPRECSVDatasetLoader
 
 __all__ = [
     "PcapDatasetLoader",
-    "CsvDatasetLoader",
+    "CNNPRECSVDatasetLoader",
 ]
